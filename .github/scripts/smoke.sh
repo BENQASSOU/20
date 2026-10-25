@@ -17,6 +17,7 @@ for i in $(seq 1 90); do
   adb logcat -d > smoke/logcat.txt
   if grep -q "SAFQA-STARTED" smoke/logcat.txt; then status=started; break; fi
   if grep -q "SAFQA-CRASH" smoke/logcat.txt; then status=error_screen; break; fi
+  if grep -q "Fatal signal" smoke/logcat.txt; then status=native_crash; break; fi
   if [ "$i" -gt 10 ] && ! adb shell pidof "$PKG" >/dev/null; then status=process_died; break; fi
 done
 sleep 4

@@ -4,9 +4,12 @@ import os
 import threading
 import traceback
 
+print("SAFQA-STEP kivy.app", flush=True)
 from kivy.app import App
 from kivy.clock import Clock
+print("SAFQA-STEP kivy window", flush=True)
 from kivy.core.window import Window
+print("SAFQA-STEP kivy window ready", flush=True)
 from kivy.lang import Builder
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.screenmanager import NoTransition, ScreenManager, SlideTransition
@@ -19,6 +22,7 @@ from .platform_android import FilePicker
 from .storage import Store
 from .ui import widgets as W
 
+print("SAFQA-STEP loading theme", flush=True)
 Builder.load_file(os.path.join(os.path.dirname(__file__), "ui", "theme.kv"))
 
 from .ui.screens import AccountScreen, ChatScreen, HomeScreen  # noqa: E402
@@ -38,6 +42,7 @@ class SafqaApp(App):
             return crash.crash_view(self._failed)
 
     def _build(self):
+        print("SAFQA-STEP build", flush=True)
         Window.clearcolor = W.C.bg
         if platform != "android":
             Window.size = (412, 860)
