@@ -10,7 +10,7 @@ version.filename = %(source.dir)s/safqa/__init__.py
 
 # Pure-Python dependencies only: everything below has a python-for-android
 # recipe or installs as a plain wheel.
-requirements = python3,kivy==2.3.1,pyjnius,android,sqlite3,openssl,pypdf==5.9.0,typing_extensions,certifi
+requirements = python3,kivy==2.3.1,filetype,pyjnius,android,sqlite3,openssl,pypdf==5.9.0,typing_extensions,certifi
 
 orientation = portrait
 fullscreen = 0
