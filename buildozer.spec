@@ -26,6 +26,11 @@ android.accept_sdk_license = True
 android.allow_backup = True
 android.release_artifact = apk
 android.debug_artifact = apk
+# Pin a stable python-for-android release and its NDK: the development
+# branch resolves Android-only wheels (e.g. charset-normalizer) that its
+# own pip step then refuses to install.
+android.ndk = 25b
+p4a.branch = v2024.01.21
 
 [buildozer]
 log_level = 2
