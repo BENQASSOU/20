@@ -1,0 +1,101 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pytest pypdf==5.9.0 certifi
+      - run: python -m pytest -q
+
+  apk:
+    needs: test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git zip unzip autoconf automake libtool pkg-config cmake \
+            zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 \
+            libffi-dev libssl-dev build-essential ccache
+
+      - name: Buildozer
+        run: pip install "buildozer==1.5.0" "cython==3.0.11" setuptools
+
+      - name: Licence secret
+        env:
+          SAFQA_LICENSE_SECRET: ${{ secrets.SAFQA_LICENSE_SECRET }}
+        run: |
+          if [ -n "$SAFQA_LICENSE_SECRET" ]; then
+            python -c "import os; open('safqa/_license_secret.py','w').write('SECRET = %r\n' % os.environ['SAFQA_LICENSE_SECRET'])"
+            echo "Licence secret embedded."
+          else
+            echo "::warning::SAFQA_LICENSE_SECRET not set - the APK accepts development licence keys only."
+          fi
+
+      - name: Cache Android SDK / NDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildozer
+          key: buildozer-global-${{ hashFiles('buildozer.spec') }}
+
+      - name: Cache build directory
+        uses: actions/cache@v4
+        with:
+          path: .buildozer
+          key: buildozer-app-${{ hashFiles('buildozer.spec') }}-${{ github.sha }}
+          restore-keys: buildozer-app-${{ hashFiles('buildozer.spec') }}-
+
+      - name: Build debug APK
+        run: yes | buildozer -v android debug
+
+      - name: Rename APK
+        id: apk
+        run: |
+          APK=$(ls bin/*.apk | head -n1)
+          VERSION=$(python -c "import re;print(re.search(r'__version__ = \"(.*)\"', open('safqa/__init__.py').read()).group(1))")
+          OUT="bin/Safqa-${VERSION}-build${{ github.run_number }}.apk"
+          mv "$APK" "$OUT"
+          echo "path=$OUT" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Safqa-apk
+          path: ${{ steps.apk.outputs.path }}
+
+      - name: Publish release (direct download link for the phone)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.apk.outputs.version }}-build${{ github.run_number }}
+          name: Safqa ${{ steps.apk.outputs.version }} (build ${{ github.run_number }})
+          prerelease: true
+          files: ${{ steps.apk.outputs.path }}
+          body: |
+            APK Android de Safqa - assistant IA des marchés publics marocains.
+            Téléchargez le fichier .apk depuis votre téléphone puis ouvrez-le pour l'installer
+            (autorisez « Installer des applications inconnues » pour votre navigateur).

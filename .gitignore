@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.buildozer/
+bin/
+venv/
+.venv/
+safqa/_license_secret.py
+*.db
