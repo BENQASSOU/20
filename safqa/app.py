@@ -12,7 +12,7 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.screenmanager import NoTransition, ScreenManager, SlideTransition
 from kivy.utils import platform
 
-from . import analysis, config, risk
+from . import analysis, config, crash, risk
 from .ai import DEFAULT_MODEL, ClaudeClient
 from .billing import Subscription
 from .platform_android import FilePicker
@@ -29,6 +29,15 @@ class SafqaApp(App):
     title = "Safqa"
 
     def build(self):
+        crash.install_runtime_handler(self)
+        try:
+            return self._build()
+        except Exception:  # noqa: BLE001 - show the error instead of closing
+            self._failed = traceback.format_exc()
+            crash.record(self._failed, self.user_data_dir)
+            return crash.crash_view(self._failed)
+
+    def _build(self):
         Window.clearcolor = W.C.bg
         if platform != "android":
             Window.size = (412, 860)
@@ -57,7 +66,17 @@ class SafqaApp(App):
         return root
 
     def on_start(self):
-        self.sm.get_screen("home").refresh()
+        if getattr(self, "_failed", None):
+            return
+        try:
+            self.sm.get_screen("home").refresh()
+        except Exception:  # noqa: BLE001
+            text = traceback.format_exc()
+            crash.record(text, self.user_data_dir)
+            self.root.clear_widgets()
+            self.root.add_widget(crash.crash_view(text))
+            return
+        print("SAFQA-STARTED", flush=True)
 
     # ------------------------------------------------------------ navigation
     def go(self, name, root_tab=False, **kw):
