@@ -27,7 +27,8 @@ def _cite(terms, key):
     return t if isinstance(t, dict) and t.get("article_key") else None
 
 
-def evaluate(project, documents, checklist, orders, items, decomptes, receptions, today=None):
+def evaluate(project, documents, checklist, orders, items, decomptes, receptions, today=None,
+             expenses=(), budget=(), guarantees=(), finance=None):
     today = today or date.today()
     terms = project.get("terms") or {}
     flags = []
@@ -194,7 +195,52 @@ def evaluate(project, documents, checklist, orders, items, decomptes, receptions
                            ", ".join(m[1] for m in missing[:8]) + ("…" if len(missing) > 8 else ""),
                            "Compléter la checklist de l'onglet Documents."))
 
+    flags.extend(erp_flags(expenses, guarantees, finance, today))
     flags.sort(key=lambda f: SEVERITY_ORDER.get(f["severity"], 9))
+    return flags
+
+
+def erp_flags(expenses, guarantees, finance, today):
+    """Cost, margin, supplier and guarantee alerts (ERP modules)."""
+    flags = []
+    if finance:
+        for c in finance.get("by_category", []):
+            if c["overrun"]:
+                flags.append(_flag("élevé" if c["ratio"] > 1.15 else "moyen", "Budget",
+                                   "Dépassement budget : %s (+%d %%)" % (c["label"], (c["ratio"] - 1) * 100),
+                                   "Réalisé %s pour un budget de %s." % (fmt_dh(c["actual"]), fmt_dh(c["budget"])),
+                                   "Analyser les écarts et réviser le budget à terminaison.",
+                                   amount=c["actual"] - c["budget"]))
+        if finance.get("contract_ht") and finance.get("budget_ht") and finance["forecast_margin"] < 0:
+            flags.append(_flag("critique", "Rentabilité", "Marge prévisionnelle négative",
+                               "Coût à terminaison %s pour un marché de %s HT." % (
+                                   fmt_dh(finance["cost_at_completion"]), fmt_dh(finance["contract_ht"])),
+                               "Revoir les achats, les rendements et les réclamations (travaux "
+                               "supplémentaires, révision des prix).", amount=-finance["forecast_margin"]))
+    for e in expenses or ():
+        if e.get("status") == "facture":
+            due = tr.parse_date(e.get("due_date"))
+            if due and due < today:
+                flags.append(_flag("moyen", "Fournisseurs",
+                                   "Facture fournisseur échue : %s" % (e.get("ref") or e.get("label") or ""),
+                                   "Échéance dépassée de %d jours." % (today - due).days,
+                                   "Planifier le règlement pour préserver la relation fournisseur."))
+    for g in guarantees or ():
+        if (g.get("status") or "active") == "liberee":
+            continue
+        exp = tr.parse_date(g.get("expiry_date"))
+        if not exp:
+            continue
+        days = (exp - today).days
+        name = (g.get("kind") or "caution").replace("_", " ")
+        if days < 0:
+            flags.append(_flag("élevé", "Garanties", "Caution %s expirée (%s)" % (name, g.get("ref") or ""),
+                               "Expirée depuis %d jours." % -days,
+                               "Demander la prorogation à la banque ou la mainlevée au maître d'ouvrage."))
+        elif days <= 30:
+            flags.append(_flag("moyen", "Garanties", "Caution %s expire dans %d jours" % (name, days),
+                               "Référence %s - %s." % (g.get("ref") or "-", fmt_dh(g.get("amount"))),
+                               "Anticiper la prorogation ou la mainlevée."))
     return flags
 
 

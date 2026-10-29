@@ -1,0 +1,24 @@
+[project]
+name = "safqa_erp"
+version = "2.0.0"
+description = "Safqa ERP - gestion des marchés publics de travaux au Maroc"
+requires-python = ">=3.10"
+dependencies = [
+    "flet==1.0.5",
+    "pypdf==5.9.0",
+    "certifi",
+]
+
+[tool.flet]
+org = "ma.safqa"
+product = "Safqa ERP"
+company = "Safqa"
+copyright = "Safqa"
+bundle_id = "ma.safqa.erp"
+
+[tool.flet.app]
+path = "src"
+module = "main"
+
+[tool.flet.android]
+split_per_abi = false

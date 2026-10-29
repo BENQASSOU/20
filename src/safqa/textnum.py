@@ -139,3 +139,76 @@ def fmt_dh(value, decimals=2):
     groups.insert(0, ent)
     out = " ".join(groups) + ("," + dec if dec else "")
     return ("-" if neg else "") + out + " DH"
+
+
+# --------------------------------------------------------------------------
+# Numbers to French words (amounts "en toutes lettres")
+# --------------------------------------------------------------------------
+
+_W_UNITS = ["zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix",
+            "onze", "douze", "treize", "quatorze", "quinze", "seize"]
+_W_TENS = {20: "vingt", 30: "trente", 40: "quarante", 50: "cinquante", 60: "soixante"}
+
+
+def _below_100(n, final=True):
+    if n < 17:
+        return _W_UNITS[n]
+    if n < 20:
+        return "dix-" + _W_UNITS[n - 10]
+    if n < 70:
+        tens, unit = n // 10 * 10, n % 10
+        if unit == 0:
+            return _W_TENS[tens]
+        if unit == 1:
+            return _W_TENS[tens] + " et un"
+        return _W_TENS[tens] + "-" + _W_UNITS[unit]
+    if n < 80:
+        if n == 71:
+            return "soixante et onze"
+        return "soixante-" + _below_100(n - 60)
+    if n == 80:
+        return "quatre-vingts" if final else "quatre-vingt"
+    return "quatre-vingt-" + _below_100(n - 80)
+
+
+def _below_1000(n, final=True):
+    hundreds, rest = divmod(n, 100)
+    if hundreds == 0:
+        return _below_100(rest, final)
+    head = "cent" if hundreds == 1 else _W_UNITS[hundreds] + " cent"
+    if rest == 0:
+        return head + ("s" if hundreds > 1 and final else "")
+    return head + " " + _below_100(rest, final)
+
+
+def int_to_words(n):
+    """French cardinal for an integer >= 0 ("deux cent quarante-cinq mille")."""
+    n = int(n)
+    if n == 0:
+        return "zéro"
+    parts = []
+    for scale, singular, plural in ((10**9, "milliard", "milliards"), (10**6, "million", "millions")):
+        q, n = divmod(n, scale)
+        if q:
+            parts.append("un " + singular if q == 1 else _below_1000(q) + " " + plural)
+    q, n = divmod(n, 1000)
+    if q:
+        parts.append("mille" if q == 1 else _below_1000(q, final=False) + " mille")
+    if n:
+        parts.append(_below_1000(n))
+    return " ".join(parts)
+
+
+def amount_in_words(value, currency="dirham", cents_name="centime"):
+    """'2 450 000,50' -> 'deux millions quatre cent cinquante mille dirhams et cinquante centimes'."""
+    value = round(float(value or 0), 2)
+    neg = value < 0
+    value = abs(value)
+    whole = int(value)
+    cents = int(round((value - whole) * 100))
+    if cents == 100:
+        whole, cents = whole + 1, 0
+    text = int_to_words(whole) + " " + currency + ("s" if whole > 1 else "")
+    if cents:
+        text += " et " + int_to_words(cents) + " " + cents_name + ("s" if cents > 1 else "")
+    return ("moins " if neg else "") + text

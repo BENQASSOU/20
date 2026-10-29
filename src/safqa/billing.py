@@ -30,7 +30,7 @@ PLANS = {
         "pitch": "Pour les PME du BTP et les bureaux d'études",
         "max_projects": 10, "ai_analyses": 30, "ai_questions": 200, "export": True,
         "features": ["10 marchés actifs", "30 analyses IA / mois", "200 questions / mois",
-                     "Export des rapports (HTML) et décomptes (CSV)", "Tout le plan Essentiel"],
+                     "Rapports PDF, décomptes officiels et exports Excel", "Tout le plan Essentiel"],
     },
     "ENTREPRISE": {
         "name": "Entreprise", "price_dh": 799,

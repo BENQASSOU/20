@@ -24,7 +24,7 @@ import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from safqa import billing  # noqa: E402
 from safqa.ai import ANALYSIS_SCHEMA, API_URL  # noqa: E402

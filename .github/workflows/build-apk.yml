@@ -10,76 +10,103 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - run: pip install pytest pypdf==5.9.0 certifi
       - run: python -m pytest -q
 
   apk:
     needs: test
-    runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: System packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            git zip unzip autoconf automake libtool pkg-config cmake \
-            zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 \
-            libffi-dev libssl-dev build-essential ccache
+      - name: Flet CLI
+        run: pip install "flet==1.0.5" "flet-cli==1.0.5"
 
-      - name: Buildozer
-        run: pip install "buildozer==1.5.0" "cython==3.0.11" setuptools
+      - name: Cache Flutter SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/flutter
+          key: flutter-${{ runner.os }}-3.44.8
 
       - name: Licence secret
         env:
           SAFQA_LICENSE_SECRET: ${{ secrets.SAFQA_LICENSE_SECRET }}
         run: |
           if [ -n "$SAFQA_LICENSE_SECRET" ]; then
-            python -c "import os; open('safqa/_license_secret.py','w').write('SECRET = %r\n' % os.environ['SAFQA_LICENSE_SECRET'])"
+            python -c "import os; open('src/safqa/_license_secret.py','w').write('SECRET = %r\n' % os.environ['SAFQA_LICENSE_SECRET'])"
             echo "Licence secret embedded."
           else
             echo "::warning::SAFQA_LICENSE_SECRET not set - the APK accepts development licence keys only."
           fi
 
-      - name: Cache Android SDK / NDK
-        uses: actions/cache@v4
+      # The same signing key must be used for every build, otherwise Android
+      # refuses to install an update over the previous version.  Set the
+      # ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD secrets for a
+      # permanent key; otherwise a key is generated once and kept in the cache.
+      - name: Restore signing key
+        uses: actions/cache/restore@v4
         with:
-          path: ~/.buildozer
-          key: buildozer-global-ndk25b-api34
+          path: signing
+          key: safqa-signing-v1
 
-      - name: Cache build directory
-        uses: actions/cache@v4
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          mkdir -p signing
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > signing/safqa.jks
+            echo "$KEYSTORE_PASSWORD" > signing/password
+          elif [ ! -f signing/safqa.jks ]; then
+            echo "safqa-erp-signing" > signing/password
+            keytool -genkeypair -v -keystore signing/safqa.jks -alias safqa -keyalg RSA -keysize 2048 \
+              -validity 10000 -storepass "$(cat signing/password)" -keypass "$(cat signing/password)" \
+              -dname "CN=Safqa ERP, O=Safqa, C=MA"
+            echo "NEW_KEY=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Save signing key
+        if: env.NEW_KEY == '1'
+        uses: actions/cache/save@v4
         with:
-          path: .buildozer
-          key: buildozer-app-${{ hashFiles('buildozer.spec') }}-${{ github.sha }}
-          restore-keys: buildozer-app-${{ hashFiles('buildozer.spec') }}-
+          path: signing
+          key: safqa-signing-v1
 
-      - name: Build debug APK
-        run: yes | buildozer -v android debug
+      - name: Build APK
+        run: |
+          export FLET_ANDROID_SIGNING_KEY_STORE="$PWD/signing/safqa.jks"
+          export FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD="$(cat signing/password)"
+          export FLET_ANDROID_SIGNING_KEY_PASSWORD="$(cat signing/password)"
+          export FLET_ANDROID_SIGNING_KEY_ALIAS="safqa"
+          flet build apk --yes --no-rich-output -v \
+            --build-number ${{ github.run_number }} --splash-color "#0B4F6C"
 
-      - name: Rename APK
+      - name: Collect APK
         id: apk
         run: |
-          APK=$(ls bin/*.apk | head -n1)
-          VERSION=$(python -c "import re;print(re.search(r'__version__ = \"(.*)\"', open('safqa/__init__.py').read()).group(1))")
-          OUT="bin/Safqa-${VERSION}-build${{ github.run_number }}.apk"
-          mv "$APK" "$OUT"
+          APK=$(find build -name "*.apk" | grep -v -- "-debug" | head -n1)
+          [ -n "$APK" ] || APK=$(find build -name "*.apk" | head -n1)
+          ls -la $(dirname "$APK")
+          VERSION=$(python -c "import re;print(re.search(r'__version__ = \"(.*)\"', open('src/safqa/__init__.py').read()).group(1))")
+          OUT="SafqaERP-${VERSION}-build${{ github.run_number }}.apk"
+          cp "$APK" "$OUT"
           echo "path=$OUT" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
@@ -87,21 +114,22 @@ jobs:
         with:
           name: Safqa-apk
           path: ${{ steps.apk.outputs.path }}
+
       - name: Publish release (direct download link for the phone)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.apk.outputs.version }}-build${{ github.run_number }}
-          name: Safqa ${{ steps.apk.outputs.version }} (build ${{ github.run_number }})
+          name: Safqa ERP ${{ steps.apk.outputs.version }} (build ${{ github.run_number }})
           prerelease: true
           files: ${{ steps.apk.outputs.path }}
           body: |
-            APK Android de Safqa - assistant IA des marchés publics marocains.
+            APK Android de Safqa ERP - gestion des marchés publics de travaux.
             Téléchargez le fichier .apk depuis votre téléphone puis ouvrez-le pour l'installer
             (autorisez « Installer des applications inconnues » pour votre navigateur).
 
   smoke:
-    # Launch the APK on an emulator (x86_64 image with ARM translation)
-    # and capture the Python log, so startup crashes are visible in CI.
+    # Install the APK on an Android emulator, run the on-device self-test
+    # (demo data, CPS analysis, PDF reports) and capture logcat + a screenshot.
     needs: apk
     runs-on: ubuntu-latest
     timeout-minutes: 30
