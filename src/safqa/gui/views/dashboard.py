@@ -5,7 +5,7 @@ from datetime import date
 import flet as ft
 
 from ... import demo, erp
-from .. import ui
+from .. import nav, ui
 from ..app import page_body
 
 SEV_ORDER = {"critique": 0, "élevé": 1, "moyen": 2, "info": 3}
@@ -31,11 +31,12 @@ def build(app):
         ui.kpi("Carnet de commandes HT", ui.short_money(t["backlog_ht"]), ft.Icons.INVENTORY_2_OUTLINED, ui.PRIMARY,
                "Reste à réaliser", on_click=lambda e: set_tab(app, 1)),
         ui.kpi("Facturé %d HT" % today.year, ui.short_money(t["year_invoiced_ht"]), ft.Icons.RECEIPT_LONG_OUTLINED,
-               ui.SUCCESS, "Décomptes émis"),
+               ui.SUCCESS, "Décomptes émis", on_click=lambda e: open_finance(app, 0)),
         ui.kpi("Créances clients", ui.short_money(t["unpaid_ttc"]), ft.Icons.HOURGLASS_BOTTOM, ui.WARNING,
                "Décomptes non payés", on_click=lambda e: open_finance(app, 1)),
         ui.kpi("Marge brute HT", ui.short_money(t["margin_ht"]), ft.Icons.TRENDING_UP,
-               ui.SUCCESS if t["margin_ht"] >= 0 else ui.DANGER, "%.1f %% du facturé" % t["margin_pct"]),
+               ui.SUCCESS if t["margin_ht"] >= 0 else ui.DANGER, "%.1f %% du facturé" % t["margin_pct"],
+               on_click=lambda e: app.go("/module/rapports")),
         ui.kpi("Dettes fournisseurs", ui.short_money(t["payables_ttc"]), ft.Icons.LOCAL_SHIPPING_OUTLINED, ui.INFO,
                "Non réglées", on_click=lambda e: open_finance(app, 2)),
         ui.kpi("Cautions en cours", ui.short_money(t["guarantees"]), ft.Icons.SHIELD_OUTLINED, "#7A5AF8",
@@ -58,7 +59,7 @@ def build(app):
         c.append(ui.list_row(f["title"], "%s · %s" % (s["project"].get("ref") or "", f.get("detail") or ""),
                              icon=ft.Icons.WARNING_AMBER_ROUNDED, icon_color=ui.SEVERITY[f["severity"]][0],
                              pills=[ui.sev_pill(f["severity"]), ui.pill(f["category"], ui.MUTED, "#F2F4F7")],
-                             on_click=lambda e, pid=pid: app.go("/marche/%s?tab=risques" % pid)))
+                             on_click=lambda e, pid=pid, f=f: app.go(nav.flag_route(pid, f))))
 
     # ---- agenda
     ev = [e for e in erp.agenda(store, today, horizon=21, past=30) if e["days"] >= -30]
@@ -100,7 +101,7 @@ def build(app):
             continue
         c.append(project_tile(app, row))
     return "Tableau de bord", [ft.IconButton(ft.Icons.PICTURE_AS_PDF, icon_color="#FFFFFF", tooltip="Rapport PDF",
-                                             on_click=lambda e: export_portfolio(app))], None, page_body(c)
+                                             on_click=lambda e: export_portfolio(app))], nav.quick_fab(app), page_body(c)
 
 
 def project_tile(app, row):

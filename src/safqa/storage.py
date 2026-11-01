@@ -227,7 +227,7 @@ class Store:
         sql = "SELECT * FROM projects"
         if not include_archived:
             sql += " WHERE archived=0"
-        return self.q(sql + " ORDER BY updated_at DESC")
+        return self.q(sql + " ORDER BY updated_at DESC, id DESC")
 
     def project(self, pid):
         return self.q1("SELECT * FROM projects WHERE id=?", (pid,))

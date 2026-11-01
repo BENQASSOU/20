@@ -237,15 +237,21 @@ class Form:
     """Builds form fields from specs and returns typed values.
 
     spec keys: key, label, type (text|multiline|number|int|date|select|bool|password),
-    value, options [(key, label)], required, hint, suffix."""
+    value, options [(key, label)], required, hint, suffix.
+    on_change: optional callable (no argument) run whenever a field changes."""
 
-    def __init__(self, page, specs):
+    def __init__(self, page, specs, on_change=None):
         self.page = page
         self.specs = specs
+        self.on_change = on_change
         self.controls = {}
         self.widgets = []
         for s in specs:
             self.widgets.append(self._build(s))
+
+    def _changed(self, e=None):
+        if self.on_change:
+            self.on_change()
 
     def _build(self, s):
         t = s.get("type", "text")
@@ -254,16 +260,18 @@ class Form:
         if t == "select":
             opts = [ft.DropdownOption(key=str(k), text=lbl) for k, lbl in s.get("options", [])]
             c = ft.Dropdown(label=label, options=opts, value=None if value in (None, "") else str(value),
-                            expand=True, enable_filter=len(opts) > 8, editable=len(opts) > 8, menu_height=320)
+                            expand=True, enable_filter=len(opts) > 8, editable=len(opts) > 8, menu_height=320,
+                            on_select=self._changed if self.on_change else None)
             self.controls[s["key"]] = c
             return ft.Row([c])
         if t == "bool":
-            c = ft.Switch(label=s["label"], value=bool(value))
+            c = ft.Switch(label=s["label"], value=bool(value), on_change=self._changed if self.on_change else None)
             self.controls[s["key"]] = c
             return c
         if t == "date":
             c = ft.TextField(label=label, value=fmt_date(value) if value else "", hint_text="JJ/MM/AAAA",
-                             keyboard_type=ft.KeyboardType.DATETIME, border_radius=10, expand=True)
+                             keyboard_type=ft.KeyboardType.DATETIME, border_radius=10, expand=True,
+                             on_change=self._changed if self.on_change else None)
 
             def open_picker(e, field=c):
                 current = parse_date(field.value) or date.today()
@@ -272,13 +280,13 @@ class Form:
                     if ev.control.value:
                         field.value = ev.control.value.strftime("%d/%m/%Y")
                         field.update()
+                        self._changed()
                 self.page.show_dialog(ft.DatePicker(value=datetime(current.year, current.month, current.day),
                                                     first_date=datetime(2000, 1, 1), last_date=datetime(2100, 12, 31),
                                                     on_change=picked))
-            c.suffix_icon = None
             self.controls[s["key"]] = c
-            return ft.Row([c, ft.IconButton(ft.Icons.CALENDAR_MONTH, on_click=open_picker, icon_color=PRIMARY)],
-                          spacing=4)
+            return ft.Row([c, ft.IconButton(ft.Icons.CALENDAR_MONTH, on_click=open_picker, icon_color=PRIMARY,
+                                            tooltip="Calendrier")], spacing=4)
         kb = None
         if t in ("number", "int"):
             kb = ft.KeyboardType.NUMBER
@@ -288,7 +296,7 @@ class Form:
                          multiline=t == "multiline", min_lines=3 if t == "multiline" else None,
                          max_lines=6 if t == "multiline" else 1, keyboard_type=kb, border_radius=10,
                          password=t == "password", can_reveal_password=t == "password",
-                         suffix=s.get("suffix"), expand=True)
+                         suffix=s.get("suffix"), expand=True, on_change=self._changed if self.on_change else None)
         self.controls[s["key"]] = c
         return ft.Row([c])
 
@@ -311,6 +319,8 @@ class Form:
                 v = num(raw)
                 if v is None:
                     return None, "Nombre invalide : %s" % s["label"]
+                if s.get("min") is not None and v < s["min"]:
+                    return None, "%s : valeur minimale %s" % (s["label"], s["min"])
                 out[s["key"]] = int(v) if t == "int" else v
             elif t == "date":
                 if not raw:
@@ -322,23 +332,37 @@ class Form:
                 out[s["key"]] = d.isoformat()
             elif t == "select":
                 key = raw if raw not in ("", None) else None
-                # keys are ints for foreign keys
                 if key is not None and s.get("int_keys"):
-                    key = int(key)
+                    try:
+                        key = int(key)
+                    except ValueError:
+                        return None, "Choix invalide : %s" % s["label"]
                 out[s["key"]] = key
             else:
                 out[s["key"]] = raw
         return out, None
 
 
-def form_dialog(page, title, specs, on_save, save_label="Enregistrer", extra=None, on_delete=None):
+def close(page, dlg):
+    """Close one specific dialog (never "whatever is on top": snackbars share the stack)."""
+    if dlg is None or not getattr(dlg, "open", False):
+        return
+    dlg.open = False
+    try:
+        dlg.update()
+    except Exception:  # noqa: BLE001 - already detached
+        pass
+
+
+def form_dialog(page, title, specs, on_save, save_label="Enregistrer", extra=None, on_delete=None, on_change=None):
     """Modal form. on_save(values) may return an error string to keep it open."""
-    form = Form(page, specs)
+    form = Form(page, specs, on_change)
     err = txt("", 13, color=DANGER)
     controls = list(form.widgets)
     if extra:
         controls.append(extra)
     controls.append(err)
+    holder = {}
 
     def save(e):
         vals, problem = form.values()
@@ -351,37 +375,51 @@ def form_dialog(page, title, specs, on_save, save_label="Enregistrer", extra=Non
             err.value = res
             err.update()
             return
-        page.pop_dialog()
+        close(page, holder["dlg"])
+
+    def delete(e):
+        close(page, holder["dlg"])
+        confirm(page, "Supprimer", "Confirmer la suppression ? Cette action est définitive.", on_delete, "Supprimer")
 
     actions = []
     if on_delete:
-        actions.append(ft.TextButton(content="Supprimer", style=ft.ButtonStyle(color=DANGER),
-                                     on_click=lambda e: (page.pop_dialog(), confirm(page, "Supprimer", "Confirmer la suppression ?", on_delete))))
-    actions += [ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
+        actions.append(ft.TextButton(content="Supprimer", style=ft.ButtonStyle(color=DANGER), on_click=delete))
+    actions += [ft.TextButton(content="Annuler", on_click=lambda e: close(page, holder["dlg"])),
                 ft.FilledButton(content=save_label, on_click=save)]
     dlg = ft.AlertDialog(title=txt(title, 18, ft.FontWeight.W_700), scrollable=True,
                          content=ft.Container(ft.Column(controls, tight=True, spacing=12), width=440),
                          actions=actions, actions_alignment=ft.MainAxisAlignment.END)
+    holder["dlg"] = dlg
+    form.dialog = dlg
     page.show_dialog(dlg)
     return form
 
 
 def confirm(page, title, message, on_yes, yes="Confirmer", danger=True):
+    holder = {}
+
     def ok(e):
-        page.pop_dialog()
+        close(page, holder["dlg"])
         on_yes()
-    page.show_dialog(ft.AlertDialog(title=txt(title, 18, ft.FontWeight.W_700), content=txt(message),
-                                    actions=[ft.TextButton(content="Annuler", on_click=lambda e: page.pop_dialog()),
-                                             ft.FilledButton(content=yes, on_click=ok,
-                                                             style=ft.ButtonStyle(bgcolor=DANGER if danger else None))]))
+    dlg = ft.AlertDialog(title=txt(title, 18, ft.FontWeight.W_700), content=txt(message),
+                         actions=[ft.TextButton(content="Annuler", on_click=lambda e: close(page, holder["dlg"])),
+                                  ft.FilledButton(content=yes, on_click=ok,
+                                                  style=ft.ButtonStyle(bgcolor=DANGER if danger else None))])
+    holder["dlg"] = dlg
+    page.show_dialog(dlg)
 
 
 def info(page, title, content, actions=None):
+    """Information dialog; returns it so callers can close it."""
     body = content if isinstance(content, ft.Control) else txt(content, selectable=True)
-    page.show_dialog(ft.AlertDialog(title=txt(title, 18, ft.FontWeight.W_700), scrollable=True,
-                                    content=ft.Container(body, width=440),
-                                    actions=(actions or []) + [ft.TextButton(content="Fermer",
-                                                                             on_click=lambda e: page.pop_dialog())]))
+    holder = {}
+    dlg = ft.AlertDialog(title=txt(title, 18, ft.FontWeight.W_700), scrollable=True,
+                         content=ft.Container(body, width=440),
+                         actions=(actions or []) + [ft.TextButton(content="Fermer",
+                                                                  on_click=lambda e: close(page, holder["dlg"]))])
+    holder["dlg"] = dlg
+    page.show_dialog(dlg)
+    return dlg
 
 
 def snack(page, message, error=False):
@@ -409,14 +447,11 @@ class Busy:
             pass
 
     def close(self):
-        try:
-            self.page.pop_dialog()
-        except Exception:  # noqa: BLE001
-            pass
+        close(self.page, self.dlg)
 
 
 def list_row(title, subtitle=None, right=None, right_sub=None, icon=None, icon_color=PRIMARY, on_click=None,
-             pills=None):
+             pills=None, trailing=None):
     left = []
     if icon:
         left.append(ft.Container(ft.Icon(icon, size=20, color=icon_color), bgcolor=_tint(icon_color),
@@ -432,6 +467,8 @@ def list_row(title, subtitle=None, right=None, right_sub=None, icon=None, icon_c
         if right_sub:
             r.append(muted(right_sub, 11.5, text_align=ft.TextAlign.RIGHT))
         cols.append(ft.Column(r, spacing=2, horizontal_alignment=ft.CrossAxisAlignment.END, tight=True))
+    if trailing:
+        cols.extend(trailing)
     return ft.Container(ft.Row(cols, spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                         padding=ft.Padding(12, 10, 12, 10), bgcolor=SURFACE, border_radius=12,
                         border=ft.Border.all(1, BORDER), on_click=on_click, ink=on_click is not None)

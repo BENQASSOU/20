@@ -7,6 +7,7 @@ from datetime import date
 import flet as ft
 
 from ... import __version__, billing, config, demo, erp, regulation, reports, selftest
+from ... import tracking as tr
 from ...ai import MODELS, ask
 from ...analysis import articles_of
 from ...storage import Store, restore_backup
@@ -39,8 +40,11 @@ def build(app):
 def module_view(app, key, params):
     fn = {"echeancier": agenda_view, "tiers": tiers_view, "assistant": assistant_view, "rapports": reports_view,
           "parametres": settings_view, "abonnement": subscription_view, "diagnostic": diagnostic_view,
-          "garanties": guarantees_module}.get(key)
-    title, actions, fab, body = fn(app, params)
+          "garanties": guarantees_module, "recherche": search_view}.get(key)
+    if fn is None:
+        title, actions, fab, body = "Introuvable", [], None, page_body([ui.empty("Cette page n'existe pas.")])
+    else:
+        title, actions, fab, body = fn(app, params)
     return ft.View(route="/module/%s" % key, bgcolor=ui.BG, padding=0, appbar=sub_appbar(title, actions=actions),
                    floating_action_button=fab, controls=[body])
 
@@ -98,9 +102,105 @@ def tiers_view(app, params):
     for t in rows:
         c.append(ui.list_row(t["name"], " · ".join(x for x in [erp.label("tier_kind", t["kind"]), t.get("city"),
                                                                t.get("phone")] if x),
-                             icon=icons.get(t["kind"], ft.Icons.PERSON), on_click=lambda e, t=t: tier_form(app, t["id"])))
+                             icon=icons.get(t["kind"], ft.Icons.PERSON), on_click=lambda e, t=t: app.go("/tiers/%s" % t["id"])))
     return "Tiers", [], ft.FloatingActionButton(icon=ft.Icons.ADD, bgcolor=ui.ACCENT,
                                                 on_click=lambda e: tier_form(app)), page_body(c)
+
+
+def search_view(app, params):
+    from .. import nav
+    return "Rechercher", [], None, page_body(nav.search_view_body(app, app.state.get("search_query", "")))
+
+
+def tier_view(app, tid):
+    """Third-party hub: identity, contact actions and every linked record."""
+    store = app.store
+    t = store.get_row("tiers", tid)
+    route = "/tiers/%s" % tid
+    if not t:
+        return ft.View(route=route, appbar=sub_appbar("Tiers supprimé"), controls=[ui.empty("Supprimé")])
+    today = date.today()
+    c = [ui.card([ui.pills_row([ui.pill(erp.label("tier_kind", t["kind"]))]),
+                  ui.txt(t["name"], 18, ft.FontWeight.W_700)] +
+                 [ui.kv(lbl, t[k]) for k, lbl in (("ice", "ICE"), ("rc", "RC"), ("if_number", "IF"), ("contact", "Interlocuteur"),
+                                                  ("phone", "Téléphone"), ("email", "E-mail"), ("address", "Adresse"),
+                                                  ("city", "Ville")) if t.get(k)] +
+                 ([ui.txt(t["notes"], 13, color=ui.MUTED)] if t.get("notes") else []), spacing=6)]
+    contact = []
+    if t.get("phone"):
+        tel = re.sub(r"[^\d+]", "", t["phone"])
+        contact.append(ui.tonal_btn("Appeler", None, ft.Icons.CALL, expand=True))
+        contact[-1].url = "tel:%s" % tel
+        contact.append(ui.tonal_btn("WhatsApp", None, ft.Icons.CHAT, expand=True))
+        contact[-1].url = "https://wa.me/%s" % re.sub(r"\D", "", tel)
+    if t.get("email"):
+        contact.append(ui.tonal_btn("E-mail", None, ft.Icons.MAIL_OUTLINE, expand=True))
+        contact[-1].url = "mailto:%s" % t["email"]
+    if contact:
+        c.append(ft.Row(contact, spacing=8))
+
+    projects = store.q("SELECT * FROM projects WHERE client_id=? ORDER BY updated_at DESC, id DESC", (tid,))
+    if projects:
+        c.append(ui.section("Marchés (%d)" % len(projects)))
+        for p in projects:
+            c.append(ui.list_row("%s - %s" % (p.get("ref") or "", p.get("title") or ""), erp.label("project_status", p.get("status") or "en_cours"),
+                                 ui.short_money(p.get("amount_ttc")), icon=ft.Icons.WORK,
+                                 on_click=lambda e, pid=p["id"]: app.go("/marche/%s" % pid)))
+    tenders = store.q("SELECT * FROM tenders WHERE client_id=? ORDER BY deposit_date DESC", (tid,))
+    if tenders:
+        c.append(ui.section("Appels d'offres (%d)" % len(tenders)))
+        for tn in tenders:
+            c.append(ui.list_row("AO %s - %s" % (tn.get("ref") or "", tn.get("title") or ""),
+                                 erp.label("tender_status", tn.get("status")), ui.short_money(tn.get("bid_ttc") or tn.get("estimate_ttc")),
+                                 icon=ft.Icons.GAVEL, on_click=lambda e, i=tn["id"]: app.go("/ao/%s" % i)))
+    if projects:
+        unpaid = [(p, d) for p in projects for d in store.children("decomptes", p["id"], "number") if not d.get("paid_date")]
+        if unpaid:
+            c.append(ui.section("Décomptes non payés"))
+            for p, d in unpaid:
+                c.append(ui.list_row("Décompte n° %s - %s" % (d.get("number"), p.get("ref") or ""),
+                                     "Constaté le %s" % tr.fmt_date(d.get("submitted_date")), ui.money(d.get("net_ttc"), 0),
+                                     icon=ft.Icons.RECEIPT_LONG, icon_color=ui.WARNING,
+                                     on_click=lambda e, pid=p["id"]: app.go("/marche/%s?tab=decomptes" % pid)))
+    exps = store.q("SELECT * FROM expenses WHERE supplier_id=? ORDER BY date DESC", (tid,))
+    if exps:
+        total = sum(e.get("amount_ht") or 0 for e in exps)
+        due = sum(erp.expense_ttc(e) for e in exps if e.get("status") != "paye")
+        c.append(ui.section("Achats (%d)" % len(exps)))
+        c.append(ui.card([ui.kv("Total acheté HT", ui.money(total, 0), strong=True),
+                          ui.kv("Reste à payer TTC", ui.money(due, 0), ui.WARNING if due else None)], spacing=6))
+        for e in exps[:30]:
+            c.append(ui.list_row(e.get("label") or "", "%s · %s" % (tr.fmt_date(e.get("date")), erp.label("expense_status", e.get("status"))),
+                                 ui.money(e.get("amount_ht"), 0), icon=ft.Icons.RECEIPT,
+                                 icon_color=ui.STATUS_COLORS.get(e.get("status"), ui.MUTED),
+                                 on_click=lambda ev, pid=e.get("project_id"): app.go("/marche/%s?tab=couts" % pid)))
+    gs = store.q("SELECT * FROM guarantees WHERE bank_id=? ORDER BY expiry_date", (tid,))
+    if gs:
+        active = [g for g in gs if (g.get("status") or "active") != "liberee"]
+        c.append(ui.section("Cautions émises (%d)" % len(gs)))
+        c.append(ui.card([ui.kv("Encours", ui.money(sum(g.get("amount") or 0 for g in active), 0), strong=True),
+                          ui.kv("Commissions estimées", ui.money(sum(erp.guarantee_info(g, today)["fees_estimate"] for g in active), 0))],
+                         spacing=6))
+        for g in gs:
+            info = erp.guarantee_info(g, today)
+            c.append(ui.list_row("%s %s" % (erp.label("guarantee_kind", g.get("kind")), g.get("ref") or ""),
+                                 "échéance %s" % tr.fmt_date(g.get("expiry_date")), ui.money(g.get("amount"), 0),
+                                 ui.days_label(info["days_to_expiry"]) if info["active"] else "Libérée", icon=ft.Icons.SHIELD,
+                                 on_click=lambda e, g=g: _open_guarantee(app, g)))
+    if not (projects or tenders or exps or gs):
+        c.append(ui.muted("Aucune opération liée à ce tiers pour le moment."))
+    actions = [ft.IconButton(ft.Icons.EDIT, icon_color="#FFFFFF", tooltip="Modifier", on_click=lambda e: tier_form(app, tid))]
+    return ft.View(route=route, bgcolor=ui.BG, padding=0, appbar=sub_appbar(t["name"], erp.label("tier_kind", t["kind"]), actions),
+                   controls=[page_body(c)])
+
+
+def _open_guarantee(app, g):
+    if g.get("project_id"):
+        app.go("/marche/%s?tab=cautions" % g["project_id"])
+    elif g.get("tender_id"):
+        app.go("/ao/%s" % g["tender_id"])
+    else:
+        app.go("/module/garanties")
 
 
 def tier_form(app, tid=None):
@@ -129,7 +229,10 @@ def tier_form(app, tid=None):
 
     def delete():
         store.delete("tiers", tid)
-        app.refresh()
+        if app.page.route.startswith("/tiers/"):
+            app.go("/module/tiers")
+        else:
+            app.refresh()
     ui.form_dialog(app.page, "Modifier le tiers" if tid else "Nouveau tiers", specs, save,
                    on_delete=delete if tid else None)
 

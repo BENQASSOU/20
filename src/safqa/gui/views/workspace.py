@@ -9,7 +9,7 @@ from ... import analysis, erp, regulation as reg, reports, rules
 from ... import tracking as tr
 from ...analysis import KIND_LABELS, articles_of, unified_findings
 from ...textract import DOC_TYPES
-from .. import ui
+from .. import nav, ui
 from ..app import page_body, sub_appbar
 
 TABS = [("synthese", "Synthèse"), ("pieces", "Pièces & IA"), ("obligations", "Obligations"), ("planning", "Planning"),
@@ -89,10 +89,7 @@ class Ctx:
     def delete(self):
         def yes():
             for d in self.store.documents(self.pid):
-                try:
-                    os.remove(d.get("path") or "")
-                except OSError:
-                    pass
+                self.app.remove_document_file(d.get("path"))
             self.store.delete_project(self.pid)
             self.app.go("/")
         ui.confirm(self.page, "Supprimer le marché", "Toutes les données de ce marché seront effacées.", yes, "Supprimer")
@@ -109,6 +106,16 @@ def tab_synthese(x):
     rs = tr.reception_status(p, s["receptions"])
     c = [ui.pills_row([ui.status_pill(p.get("status") or "en_cours", erp.label("project_status", p.get("status") or "en_cours"))] +
                       [ui.pill(v, ui.MUTED, "#F2F4F7") for v in (p.get("category"), p.get("location"), p.get("manager")) if v])]
+    c.append(quick_actions(x))
+    links = []
+    if p.get("tender_id") and x.store.get_row("tenders", p["tender_id"]):
+        t = x.store.get_row("tenders", p["tender_id"])
+        links.append(ui.list_row("Issu de l'appel d'offres n° %s" % (t.get("ref") or ""), t.get("title") or "",
+                                 icon=ft.Icons.GAVEL, icon_color=ui.WARNING, on_click=lambda e: x.app.go("/ao/%s" % t["id"])))
+    if p.get("client_id") and x.store.get_row("tiers", p["client_id"]):
+        links.append(ui.list_row("Maître d'ouvrage : %s" % x.store.tier_name(p["client_id"]), "Fiche, contacts et autres marchés",
+                                 icon=ft.Icons.ACCOUNT_BALANCE, on_click=lambda e: x.app.go("/tiers/%s" % p["client_id"])))
+    c += links
     c.append(ui.kpi_grid([
         ui.kpi("Montant TTC", ui.short_money(f["contract_ttc"]), ft.Icons.REQUEST_QUOTE_OUTLINED, ui.PRIMARY),
         ui.kpi("Facturé HT", "%d %%" % (f["invoiced_ratio"] * 100), ft.Icons.RECEIPT_LONG_OUTLINED, ui.SUCCESS,
@@ -152,7 +159,7 @@ def tab_synthese(x):
     flags = s["flags"]
     c.append(ui.section("Alertes (%d)" % len(flags), ui.text_btn("Tout voir", lambda e: x.app.go("/marche/%s?tab=risques" % x.pid))))
     for fl in flags[:3]:
-        c.append(flag_card(fl))
+        c.append(flag_card(fl, x))
     if not flags:
         c.append(ui.card([ui.muted("Aucune alerte.")]))
     c.append(ui.section("Clauses clés", ui.text_btn("Corriger", lambda e: edit_terms(x))))
@@ -161,7 +168,7 @@ def tab_synthese(x):
         t = s["terms"].get(key)
         if not t or key in ("execution_delay_months", "penalty_other_cap_pct"):
             continue
-        src = [ui.cite_pill(t.get("article_label"), t.get("page"))] if t.get("article_key") else \
+        src = [nav.cite(x.app, x.pid, t)] if t.get("article_key") else \
             [ui.pill("Défaut : " + (t.get("article_label") or "")[:34], ui.MUTED, "#F2F4F7", 10.5)] if t.get("source") == "défaut" else \
             [ui.pill(t.get("source") or "", ui.MUTED, "#F2F4F7")]
         rows.append(ft.Column([ui.kv(lbl, rules.format_term(key, t.get("value")),
@@ -205,7 +212,26 @@ def edit_terms(x):
     ui.form_dialog(x.page, "Clauses du contrat", specs, save)
 
 
-def flag_card(f):
+def quick_actions(x):
+    """One-tap shortcuts to the most frequent operations on a contract."""
+    from .finance import expense_form
+
+    def tab(key):
+        return lambda e: x.app.go("/marche/%s?tab=%s" % (x.pid, key))
+    chips = [
+        ("Ordre de service", ft.Icons.ASSIGNMENT, lambda e: os_form(x)),
+        ("Attachement", ft.Icons.STRAIGHTEN, tab("attachements")),
+        ("Décompte", ft.Icons.RECEIPT_LONG, lambda e: new_decompte(x)),
+        ("Dépense", ft.Icons.SHOPPING_CART, lambda e: expense_form(x.app, project_id=x.pid)),
+        ("Journal", ft.Icons.MENU_BOOK, lambda e: journal_form(x)),
+        ("Document", ft.Icons.UPLOAD_FILE, lambda e: x.app.task(add_document, x)),
+        ("Assistant IA", ft.Icons.AUTO_AWESOME, lambda e: x.app.go("/module/assistant?pid=%s" % x.pid)),
+    ]
+    return ft.Row([ft.Chip(label=ui.txt(lbl, 12.5), leading=ft.Icon(icon, size=16, color=ui.PRIMARY), on_click=fn)
+                   for lbl, icon, fn in chips], spacing=6, scroll=ft.ScrollMode.AUTO)
+
+
+def flag_card(f, x=None, doc_id=None):
     fg = ui.SEVERITY.get(f["severity"], (ui.MUTED,))[0]
     items = [ui.pills_row([ui.sev_pill(f["severity"]), ui.pill(f.get("category") or "", ui.MUTED, "#F2F4F7")]),
              ui.txt(f["title"], 14.5, ft.FontWeight.W_600)]
@@ -215,10 +241,17 @@ def flag_card(f):
         items.append(ft.Row([ft.Icon(ft.Icons.LIGHTBULB_OUTLINE, size=16, color=ui.PRIMARY),
                              ui.txt(f["action"], 13, color=ui.PRIMARY_DARK, expand=True)], vertical_alignment=ft.CrossAxisAlignment.START))
     if f.get("article_label"):
-        items.append(ui.pills_row([ui.cite_pill(f["article_label"], f.get("page"))]))
+        items.append(ui.pills_row([nav.cite(x.app, x.pid, f, doc_id) if x else ui.cite_pill(f["article_label"], f.get("page"))]))
     if f.get("text"):
         items.append(ui.muted("« %s »" % _trim(f["text"], 260), 12, italic=True))
-    return ui.card(items, accent=fg, spacing=6)
+    on_click = None
+    if x is not None and not doc_id:
+        target = nav.flag_tab(f)
+        if target != "risques" or x.app.state.get("ws_tab_%s" % x.pid) != "risques":
+            items.append(ft.Row([ui.muted("Ouvrir : %s" % dict(TABS).get(target, target), 11.5, color=ui.PRIMARY),
+                                 ft.Icon(ft.Icons.CHEVRON_RIGHT, size=16, color=ui.PRIMARY)], spacing=2))
+            on_click = lambda e: x.app.go(nav.flag_route(x.pid, f))  # noqa: E731
+    return ui.card(items, accent=fg, spacing=6, on_click=on_click)
 
 
 def _trim(t, n):
@@ -296,10 +329,7 @@ async def add_document(x):
 async def ingest(x, path, name, doc_type):
     res = await x.app.run("Extraction et analyse du document…", analysis.ingest, path, name, doc_type)
     if not res:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+        x.app.remove_document_file(path)
         return
     res.update(project_id=x.pid, uploaded_at=date.today().isoformat())
     doc_id = x.store.insert("documents", res)
@@ -375,7 +405,7 @@ def tab_obligations(x):
     for d in x.s["documents"]:
         for f in unified_findings(d):
             if f["kind"] in ("obligation", "prohibition", "deadline", "penalty", "document", "financial"):
-                items.append(f)
+                items.append(dict(f, doc_id=d["id"]))
 
     def keep(f):
         if flt == "Tout":
@@ -395,11 +425,13 @@ def tab_obligations(x):
     if not x.s["documents"]:
         c.append(ui.empty("Ajoutez le CPS dans l'onglet Pièces & IA.", ft.Icons.DESCRIPTION))
     for f in shown[:150]:
-        c.append(finding_card(f))
+        c.append(finding_card(f, x))
+    if len(shown) > 150:
+        c.append(ui.muted("Affichage limité à 150 éléments : utilisez les filtres."))
     return c, None
 
 
-def finding_card(f):
+def finding_card(f, x=None, doc_id=None):
     kind = f["kind"]
     accent = {"penalty": ui.DANGER, "deadline": ui.INFO, "document": ui.ACCENT, "financial": ui.SUCCESS}.get(kind, ui.PRIMARY)
     pills = [ui.pill(KIND_LABELS.get(kind, kind), accent, ui._tint(accent))]
@@ -413,10 +445,16 @@ def finding_card(f):
         items.append(ui.muted("« %s »" % _trim(f["text"], 300), 12, italic=True))
     cite = []
     if f.get("article_label"):
-        cite.append(ui.cite_pill(f["article_label"], f.get("page")))
+        cite.append(nav.cite(x.app, x.pid, f, doc_id) if x else ui.cite_pill(f["article_label"], f.get("page")))
     if f.get("source") == "IA":
         cite.append(ui.pill("Citation vérifiée" if f.get("verified") else "À vérifier",
                             *(ui.SEVERITY["info"][:2] if f.get("verified") else ui.SEVERITY["moyen"][:2])))
+    if x is not None and kind in ("obligation", "deadline", "document"):
+        cite.append(ft.Container(ft.Row([ft.Icon(ft.Icons.EVENT_AVAILABLE, size=15, color=ui.PRIMARY),
+                                         ui.txt("Planifier", 11.5, ft.FontWeight.W_600, ui.PRIMARY)], spacing=4, tight=True),
+                                 padding=ft.Padding(9, 3, 9, 3), border_radius=20, border=ft.Border.all(1, ui.BORDER),
+                                 ink=True, tooltip="Ajouter au planning du marché",
+                                 on_click=lambda e: nav.obligation_to_task(x.app, x.pid, f)))
     if cite:
         items.append(ui.pills_row(cite))
     return ui.card(items, accent=accent, spacing=6)
@@ -578,6 +616,9 @@ def tab_attachements(x):
                         ui.DANGER if q["mass_variation_pct"] > (q["mass_increase_limit_pct"] or 10) else None, True)], spacing=6),
          ft.Row([ui.tonal_btn("Prix", lambda e: item_form(x), ft.Icons.ADD, expand=True),
                  ui.tonal_btn("Importer CSV", lambda e: x.app.task(import_csv, x), ft.Icons.UPLOAD_FILE, expand=True)], spacing=8)]
+    if q["executed_ht"]:
+        c.append(ui.primary_btn("Établir le décompte n° %d sur ces quantités" % (len(x.s["decomptes"]) + 1),
+                                lambda e: new_decompte(x), ft.Icons.RECEIPT_LONG, expand=True))
     ai_items = [it for d in x.s["documents"] for it in (((d.get("analysis") or {}).get("ai") or {}).get("bpde_items") or [])]
     if ai_items and not x.s["items"]:
         c.append(ui.primary_btn("Importer %d prix extraits par l'IA" % len(ai_items), lambda e: import_items(x, [
@@ -767,24 +808,34 @@ def new_decompte(x):
         ui.snack(x.page, "Décompte n° %d : net à payer %s" % (res["number"], ui.money(res["net_ttc"])))
         x.refresh()
 
-    form = ui.form_dialog(x.page, "Décompte n° %d" % (len(s["decomptes"]) + 1), specs, save, extra=preview)
+    holder = {}
 
-    def update(e=None):
+    def update():
+        form = holder.get("form")
+        if form is None:
+            return
         v, err = form.values()
         if err:
             return
         r = compute(v)
-        preview.value = ("Travaux HT %s · TVA %s\nTotal TTC %s · Retenue %s\nPrécédents %s\nNet à payer : %s" % (
-            ui.money(r["works_ht"], 0), ui.money(r["tva"], 0), ui.money(r["total_ttc"], 0), ui.money(r["retenue"], 0),
-            ui.money(r["previous_ttc"], 0), ui.money(r["net_ttc"])))
+        lines = ["Travaux HT %s · TVA %s" % (ui.money(r["works_ht"], 0), ui.money(r["tva"], 0)),
+                 "Total TTC %s · Retenue %s" % (ui.money(r["total_ttc"], 0), ui.money(r["retenue"], 0)),
+                 "Décomptes précédents %s" % ui.money(r["previous_ttc"], 0),
+                 "Net à payer : %s" % ui.money(r["net_ttc"])]
+        if not r["works_ht"]:
+            lines.append("Aucune quantité exécutée : saisissez d'abord les attachements.")
+        elif r["net_ttc"] < 0:
+            lines.append("Net négatif : vérifiez les pénalités et les quantités.")
+        preview.value = "\n".join(lines)
+        preview.color = ui.DANGER if r["net_ttc"] <= 0 else ui.TEXT
         try:
             preview.update()
         except Exception:  # noqa: BLE001 - not yet mounted
             pass
+
+    holder["form"] = ui.form_dialog(x.page, "Décompte n° %d" % (len(s["decomptes"]) + 1), specs, save,
+                                    extra=preview, on_change=update)
     update()
-    for k in ("revision", "penalties", "advance"):
-        form.controls[k].on_change = update
-    form.controls["final"].on_change = update
 
 
 # --------------------------------------------------------------------------
@@ -950,7 +1001,7 @@ def tab_risques(x):
     if not flags:
         c.append(ui.empty("Aucun risque détecté.", ft.Icons.VERIFIED_OUTLINED))
     for f in flags:
-        c.append(flag_card(f))
+        c.append(flag_card(f, x))
     return c, None
 
 
@@ -978,6 +1029,7 @@ def document_view(app, pid, doc_id):
                    content=ft.TabBar(tabs=[ft.Tab(label=lbl) for _, lbl in DOC_TABS], scrollable=True,
                                      tab_alignment=ft.TabAlignment.START))
     a = doc.get("analysis") or {}
+    dctx = Ctx(app, pid, None)
     c = []
     if tab == "elements":
         if doc.get("scanned") and not a.get("ai"):
@@ -995,7 +1047,7 @@ def document_view(app, pid, doc_id):
                         spacing=6, scroll=ft.ScrollMode.AUTO))
         items = [f for f in fnd if sel == "Tout" or KIND_LABELS.get(f["kind"], f["kind"]) == sel]
         c.append(ui.muted("%d élément(s)" % len(items)))
-        c += [finding_card(f) for f in items[:200]]
+        c += [finding_card(f, dctx, doc_id) for f in items[:200]]
     elif tab == "problemes":
         issues = list(a.get("issues", []))
         for r in a.get("ai_risks", []):
@@ -1005,7 +1057,7 @@ def document_view(app, pid, doc_id):
         from ...risk import SEVERITY_ORDER
         for i in sorted(issues, key=lambda i: SEVERITY_ORDER.get(i.get("severity"), 9)):
             i.setdefault("category", "Règles")
-            c.append(flag_card(i))
+            c.append(flag_card(i, dctx, doc_id))
         if not issues:
             c.append(ui.empty("Aucun point d'attention.", ft.Icons.VERIFIED_OUTLINED))
     elif tab == "resume":
@@ -1027,10 +1079,7 @@ def document_view(app, pid, doc_id):
                                       controls=[ft.Container(ui.txt(art.text, 13, selectable=True), padding=12)]))
 
     def delete():
-        try:
-            os.remove(doc.get("path") or "")
-        except OSError:
-            pass
+        app.remove_document_file(doc.get("path"))
         store.delete("documents", doc_id)
         app.go("/marche/%s?tab=pieces" % pid)
 

@@ -85,7 +85,7 @@ def test_cashflow_and_agenda(store):
 def test_reports_are_pdfs(store):
     pf = erp.portfolio(store, TODAY)
     co = store.get_json("company")
-    s = pf["states"][0]
+    s = next(x for x in pf["states"] if x["documents"] and x["decomptes"])
     for data in (reports.contract_report(s, co, TODAY), reports.decompte_pdf(s, s["decomptes"][-1], co),
                  reports.portfolio_pdf(store, co, TODAY), reports.treasury_pdf(store, co, TODAY),
                  reports.guarantees_pdf(store, co, TODAY), reports.analysis_pdf(s, co)):

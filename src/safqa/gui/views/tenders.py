@@ -142,6 +142,9 @@ def detail_view(app, tid):
                                                 13.5, ft.FontWeight.W_600, color)]),
                                  bgcolor=ui._tint(color), border_radius=10, padding=10))
     c.append(ui.card(head))
+    if t.get("client_id") and store.get_row("tiers", t["client_id"]):
+        c.append(ui.list_row("Maître d'ouvrage : %s" % store.tier_name(t["client_id"]), "Fiche, contacts, marchés et AO",
+                             icon=ft.Icons.ACCOUNT_BALANCE, on_click=lambda e: app.go("/tiers/%s" % t["client_id"])))
 
     est, bid = t.get("estimate_ttc"), t.get("bid_ttc")
     fin = [ui.kv("Estimation du maître d'ouvrage", ui.money(est)), ui.kv("Notre offre", ui.money(bid), strong=True)]

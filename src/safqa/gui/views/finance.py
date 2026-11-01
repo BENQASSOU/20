@@ -6,7 +6,7 @@ import flet as ft
 
 from ... import erp, reports
 from ... import tracking as tr
-from .. import ui
+from .. import nav, ui
 from ..app import page_body
 
 SUBTABS = ["Trésorerie", "Créances", "Dépenses", "Cautions"]
@@ -115,21 +115,39 @@ def receivables_tab(app):
                              ("%d j / %d j" % (st["days"], st["limit"])) if st["days"] is not None else "",
                              icon=ft.Icons.RECEIPT_LONG, icon_color=ui.DANGER if st["late"] else ui.WARNING,
                              pills=[ui.pill("Hors délai", *ui.SEVERITY["critique"][:2])] if st["late"] else None,
+                             trailing=[ft.IconButton(ft.Icons.CHECK_CIRCLE_OUTLINE, icon_color=ui.SUCCESS,
+                                                     tooltip="Marquer encaissé aujourd'hui",
+                                                     on_click=lambda e, d=d: nav.mark_decompte_paid(app, d))],
                              on_click=lambda e, d=d: payment_form(app, d)))
     return c
 
 
+def links(app, holder, items):
+    """Buttons placed inside a form that close it and navigate elsewhere."""
+    def go(route):
+        def handler(e):
+            if holder.get("form"):
+                ui.close(app.page, holder["form"].dialog)
+            app.go(route)
+        return handler
+    btns = [ft.TextButton(content=lbl, icon=icon, on_click=go(route)) for lbl, icon, route in items if route]
+    return ft.Row(btns, wrap=True, spacing=4) if btns else None
+
+
 def payment_form(app, d):
+    holder = {}
+
     def save(v):
         app.store.update("decomptes", d["id"], {"submitted_date": v["submitted_date"], "paid_date": v["paid_date"],
                                                 "paid_amount": v["paid_amount"] if v["paid_date"] else None})
         ui.snack(app.page, "Paiement enregistré")
         app.refresh()
-    ui.form_dialog(app.page, "Décompte n° %s - paiement" % d.get("number"), [
+    extra = links(app, holder, [("Ouvrir le marché", ft.Icons.WORK_OUTLINE, "/marche/%s?tab=decomptes" % d["project_id"])])
+    holder["form"] = ui.form_dialog(app.page, "Décompte n° %s - paiement" % d.get("number"), extra=extra, specs=[
         {"key": "submitted_date", "label": "Date de constatation / dépôt", "type": "date", "value": d.get("submitted_date")},
         {"key": "paid_date", "label": "Date de paiement", "type": "date", "value": d.get("paid_date")},
         {"key": "paid_amount", "label": "Montant encaissé (DH)", "type": "number",
-         "value": d.get("paid_amount") or d.get("net_ttc")}], save)
+         "value": d.get("paid_amount") or d.get("net_ttc")}], on_save=save)
 
 
 # --------------------------------------------------------------------------
@@ -172,9 +190,13 @@ def expenses_tab(app, project_id=None):
         p = projects.get(e.get("project_id")) or {}
         sub = " · ".join(x for x in [store.tier_name(e.get("supplier_id")), tr.fmt_date(e.get("date")),
                                      None if project_id else (p.get("ref") or "")] if x)
+        trailing = None
+        if st != "paye":
+            trailing = [ft.IconButton(ft.Icons.CHECK_CIRCLE_OUTLINE, icon_color=ui.SUCCESS, tooltip="Marquer payé",
+                                      on_click=lambda ev, e=e: nav.mark_expense_paid(app, e))]
         c.append(ui.list_row(e.get("label") or "Dépense", sub, ui.money(e.get("amount_ht"), 0), "HT",
                              icon=ft.Icons.RECEIPT, icon_color=ui.STATUS_COLORS.get(st, ui.MUTED), pills=pills,
-                             on_click=lambda ev, e=e: expense_form(app, e["id"])))
+                             trailing=trailing, on_click=lambda ev, e=e: expense_form(app, e["id"])))
     if not shown:
         c.append(ui.empty("Aucune dépense.", ft.Icons.SHOPPING_CART_OUTLINED,
                           ui.primary_btn("Ajouter une dépense", lambda e: expense_form(app, project_id=project_id),
@@ -219,8 +241,14 @@ def expense_form(app, eid=None, project_id=None):
 
     if not suppliers:
         specs[4]["hint"] = "Ajoutez vos fournisseurs dans Plus › Tiers"
-    ui.form_dialog(app.page, "Modifier la dépense" if eid else "Nouvelle dépense", specs, save,
-                   on_delete=delete if eid else None)
+    holder = {}
+    extra = None
+    if eid:
+        extra = links(app, holder, [
+            ("Ouvrir le marché", ft.Icons.WORK_OUTLINE, "/marche/%s?tab=couts" % e["project_id"] if e.get("project_id") else None),
+            ("Fiche fournisseur", ft.Icons.CONTACTS, "/tiers/%s" % e["supplier_id"] if e.get("supplier_id") else None)])
+    holder["form"] = ui.form_dialog(app.page, "Modifier la dépense" if eid else "Nouvelle dépense", specs, save,
+                                    extra=extra, on_delete=delete if eid else None)
 
 
 # --------------------------------------------------------------------------
@@ -296,6 +324,8 @@ def guarantee_form(app, gid=None, defaults=None):
     ]
 
     def save(v):
+        if v.get("issue_date") and v.get("expiry_date") and v["expiry_date"] < v["issue_date"]:
+            return "L'échéance doit être postérieure à l'émission"
         store.save("guarantees", v, gid)
         if v.get("project_id") and v.get("kind") == "definitive":
             store.set_check(v["project_id"], "CAUTION_DEF", True, v.get("issue_date"))
@@ -305,5 +335,12 @@ def guarantee_form(app, gid=None, defaults=None):
     def delete():
         store.delete("guarantees", gid)
         app.refresh()
-    ui.form_dialog(app.page, "Modifier la caution" if gid else "Nouvelle caution", specs, save,
-                   on_delete=delete if gid else None)
+    holder = {}
+    extra = None
+    if gid:
+        extra = links(app, holder, [
+            ("Ouvrir le marché", ft.Icons.WORK_OUTLINE, "/marche/%s?tab=cautions" % g["project_id"] if g.get("project_id") else None),
+            ("Ouvrir l'AO", ft.Icons.GAVEL, "/ao/%s" % g["tender_id"] if g.get("tender_id") else None),
+            ("Fiche banque", ft.Icons.SAVINGS, "/tiers/%s" % g["bank_id"] if g.get("bank_id") else None)])
+    holder["form"] = ui.form_dialog(app.page, "Modifier la caution" if gid else "Nouvelle caution", specs, save,
+                                    extra=extra, on_delete=delete if gid else None)

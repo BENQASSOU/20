@@ -45,15 +45,19 @@ def run(work_dir=None):
         state["pf"] = pf
         return "%d alertes" % sum(r["critical"] + r["high"] for r in pf["rows"])
 
+    def main_state():
+        """The demo contract that has a CPS and payment statements."""
+        return next(s for s in state["pf"]["states"] if s["documents"] and s["decomptes"])
+
     def analysis_check():
-        s = state["pf"]["states"][0]
+        s = main_state()
         n = sum(len((d.get("analysis") or {}).get("findings", [])) for d in s["documents"])
         if not n:
             raise AssertionError("aucun élément extrait du CPS de démonstration")
         return "%d éléments extraits" % n
 
     def pdfs():
-        st, s = state["store"], state["pf"]["states"][0]
+        st, s = state["store"], main_state()
         co = st.get_json("company", {})
         sizes = [len(reports.contract_report(s, co)), len(reports.decompte_pdf(s, s["decomptes"][-1], co)),
                  len(reports.portfolio_pdf(st, co)), len(reports.treasury_pdf(st, co)),

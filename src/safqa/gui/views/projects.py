@@ -15,49 +15,80 @@ FILTERS = [("actifs", "En cours"), ("receptionne", "Réceptionnés"), ("clos", "
 def build(app):
     st = app.state
     flt = st.get("projects_filter", "actifs")
-    query = st.get("projects_query", "")
     pf = erp.portfolio(app.store, date.today())
     rows = []
     for row in pf["rows"]:
-        p = row["state"]["project"]
-        status = p.get("status") or "en_cours"
+        status = row["state"]["project"].get("status") or "en_cours"
         if flt == "actifs" and status not in ("en_cours", "suspendu"):
             continue
         if flt in ("receptionne", "clos") and status != flt:
             continue
-        hay = " ".join(str(p.get(k) or "") for k in ("ref", "title", "owner", "location", "category")).lower()
-        if query and query.lower() not in hay:
-            continue
         rows.append(row)
+    listing = ft.Column(spacing=12, tight=True)
+
+    def render(query):
+        q = (query or "").strip().lower()
+        listing.controls.clear()
+        shown = 0
+        for row in rows:
+            p = row["state"]["project"]
+            hay = " ".join(str(p.get(k) or "") for k in ("ref", "title", "owner", "location", "category",
+                                                         "manager")).lower()
+            if q and q not in hay:
+                continue
+            shown += 1
+            listing.controls.append(project_tile(app, row))
+        if not shown:
+            listing.controls.append(ui.empty("Aucun marché pour cette recherche." if q else "Aucun marché pour ce filtre.",
+                                             ft.Icons.WORK_OFF_OUTLINED,
+                                             ui.primary_btn("Nouveau marché", lambda e: new_project(app), ft.Icons.ADD)))
 
     def on_search(e):
+        # Filter in place: rebuilding the page would close the keyboard at each letter.
         st["projects_query"] = e.control.value
-        app.refresh()
+        render(e.control.value)
+        try:
+            listing.update()
+        except Exception:  # noqa: BLE001 - not mounted (tests)
+            pass
 
     def on_filter(code):
         st["projects_filter"] = code
         app.refresh()
 
+    query = st.get("projects_query", "")
+    render(query)
+    t = pf["totals"]
     controls = [
         ft.TextField(value=query, hint_text="Rechercher (n°, objet, maître d'ouvrage, ville)…",
                      prefix_icon=ft.Icons.SEARCH, border_radius=12, bgcolor="#FFFFFF", dense=True,
-                     on_submit=on_search),
+                     on_change=on_search),
         ft.Row([ft.Chip(label=ui.txt(lbl, 12.5), selected=flt == k, on_select=lambda e, k=k: on_filter(k))
                 for k, lbl in FILTERS], spacing=6, scroll=ft.ScrollMode.AUTO),
+        ui.card([ui.kv("Marchés", str(t["projects"])),
+                 ui.kv("Montant total HT", ui.money(t["contract_ht"], 0), strong=True),
+                 ui.kv("Facturé HT", ui.money(t["invoiced_ht"], 0)),
+                 ui.kv("Reste à réaliser HT", ui.money(t["backlog_ht"], 0))], padding=12, spacing=5),
+        listing,
     ]
-    t = pf["totals"]
-    controls.append(ui.card([ui.kv("Marchés", str(t["projects"])),
-                             ui.kv("Montant total HT", ui.money(t["contract_ht"], 0), strong=True),
-                             ui.kv("Facturé HT", ui.money(t["invoiced_ht"], 0)),
-                             ui.kv("Reste à réaliser HT", ui.money(t["backlog_ht"], 0))], padding=12, spacing=5))
-    if not rows:
-        controls.append(ui.empty("Aucun marché pour ce filtre.", ft.Icons.WORK_OFF_OUTLINED,
-                                 ui.primary_btn("Nouveau marché", lambda e: project_form(app), ft.Icons.ADD)))
-    for row in rows:
-        controls.append(project_tile(app, row))
+    archived = [p for p in app.store.projects(include_archived=True) if p.get("archived")]
+    if archived and flt == "tous":
+        controls.append(ui.section("Archivés (%d)" % len(archived)))
+        for p in archived:
+            controls.append(ui.list_row("%s - %s" % (p.get("ref") or "", p.get("title") or ""), p.get("owner") or "",
+                                        icon=ft.Icons.ARCHIVE_OUTLINED, icon_color=ui.MUTED,
+                                        trailing=[ft.IconButton(ft.Icons.UNARCHIVE_OUTLINED, tooltip="Désarchiver",
+                                                                on_click=lambda e, pid=p["id"]: unarchive(app, pid))],
+                                        on_click=lambda e, pid=p["id"]: app.go("/marche/%s" % pid)))
     fab = ft.FloatingActionButton(icon=ft.Icons.ADD, content="Marché", on_click=lambda e: new_project(app),
                                   bgcolor=ui.ACCENT)
     return "Marchés", [], fab, page_body(controls)
+
+
+def unarchive(app, pid):
+    app.store.save_project({"archived": 0}, pid)
+    ui.snack(app.page, "Marché désarchivé")
+    app.refresh()
 
 
 def new_project(app):

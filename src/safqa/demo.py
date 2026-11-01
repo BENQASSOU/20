@@ -5,6 +5,7 @@ the alerts and the cash-flow forecast are meaningful whenever it is loaded.
 """
 
 import os
+import shutil
 from datetime import date, timedelta
 
 from . import analysis
@@ -61,7 +62,13 @@ def load_demo(store, today=None, docs_dir=None):
         "category": "Voirie", "manager": "Ing. Karim B.", "amount_ttc": 2450000.0,
         "approval_notif_date": d(-230), "delay_days": 180, "delay_months": 6, "status": "en_cours"})
     if os.path.exists(SAMPLE_CPS):
-        doc = analysis.ingest(SAMPLE_CPS, "CPS_AO_12_2026.txt", "CPS")
+        # Work on a copy: the app may delete the document later, and the
+        # bundled sample must stay intact for the next demo load.
+        docs_dir = docs_dir or os.path.join(os.path.dirname(os.path.abspath(store.path)), "documents")
+        os.makedirs(docs_dir, exist_ok=True)
+        copy_path = os.path.join(docs_dir, "%s_CPS_AO_12_2026.txt" % p1)
+        shutil.copyfile(SAMPLE_CPS, copy_path)
+        doc = analysis.ingest(copy_path, "CPS_AO_12_2026.txt", "CPS")
         doc.update(project_id=p1, uploaded_at=d(-225))
         store.insert("documents", doc)
     for code in ("ACTE_ENGAGEMENT", "DECL_HONNEUR", "CAUTION_PROV", "ATTEST_FISCALE", "ATTEST_CNSS", "RC_CERT",
