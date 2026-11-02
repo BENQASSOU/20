@@ -43,6 +43,10 @@ def build(app):
                "%d à traiter" % pf["guarantees"]["alerts"], on_click=lambda e: open_finance(app, 3)),
     ]))
 
+    # ---- Safqa IA
+    from ..copilot_ui import insights_section
+    c.extend(insights_section(app, limit=4))
+
     # ---- alerts
     alerts = []
     for row in pf["rows"]:

@@ -6,7 +6,7 @@ from datetime import date
 
 import flet as ft
 
-from ... import __version__, billing, config, demo, erp, regulation, reports, selftest
+from ... import __version__, billing, config, copilot, demo, erp, regulation, reports, selftest
 from ... import tracking as tr
 from ...ai import MODELS, ask
 from ...analysis import articles_of
@@ -17,7 +17,8 @@ from ..app import page_body, sub_appbar
 MODULES = [
     ("echeancier", "Échéancier", "Toutes les dates clés", ft.Icons.EVENT_NOTE, ui.INFO),
     ("tiers", "Tiers", "Clients, fournisseurs, banques", ft.Icons.CONTACTS_OUTLINED, "#7A5AF8"),
-    ("assistant", "Assistant IA", "Questions sur vos marchés", ft.Icons.AUTO_AWESOME, ui.ACCENT),
+    ("assistant", "Safqa IA", "Questions, conseils, citations", ft.Icons.AUTO_AWESOME, ui.ACCENT),
+    ("courriers", "Courriers", "Relances, mainlevées, réclamations", ft.Icons.MAIL_OUTLINE, ui.INFO),
     ("rapports", "Rapports & exports", "PDF, CSV, partage", ft.Icons.PICTURE_AS_PDF_OUTLINED, ui.DANGER),
     ("parametres", "Paramètres", "Entreprise, IA, données", ft.Icons.SETTINGS_OUTLINED, ui.MUTED),
     ("abonnement", "Abonnement", "Formules et activation", ft.Icons.WORKSPACE_PREMIUM_OUTLINED, ui.SUCCESS),
@@ -40,13 +41,44 @@ def build(app):
 def module_view(app, key, params):
     fn = {"echeancier": agenda_view, "tiers": tiers_view, "assistant": assistant_view, "rapports": reports_view,
           "parametres": settings_view, "abonnement": subscription_view, "diagnostic": diagnostic_view,
-          "garanties": guarantees_module, "recherche": search_view}.get(key)
+          "garanties": guarantees_module, "recherche": search_view, "courriers": letters_view}.get(key)
     if fn is None:
         title, actions, fab, body = "Introuvable", [], None, page_body([ui.empty("Cette page n'existe pas.")])
     else:
         title, actions, fab, body = fn(app, params)
     return ft.View(route="/module/%s" % key, bgcolor=ui.BG, padding=0, appbar=sub_appbar(title, actions=actions),
                    floating_action_button=fab, controls=[body])
+
+
+# --------------------------------------------------------------------------
+# Courriers
+# --------------------------------------------------------------------------
+
+LETTER_ICONS = {"relance_paiement": ft.Icons.PAYMENTS_OUTLINED, "prolongation": ft.Icons.MORE_TIME,
+                "reception": ft.Icons.FACT_CHECK_OUTLINED, "mainlevee": ft.Icons.SHIELD_OUTLINED,
+                "reserve_os": ft.Icons.GAVEL, "reprise": ft.Icons.PLAY_CIRCLE_OUTLINE}
+
+
+def letters_view(app, params):
+    from ..copilot_ui import insight_card, letter_dialog
+    projects = app.store.projects()
+    if not projects:
+        return "Courriers", [], None, page_body([ui.empty("Créez un marché pour rédiger vos courriers.",
+                                                          ft.Icons.MAIL_OUTLINE)])
+    c = [ui.card([ui.bold("Courriers prêts à envoyer", 15),
+                  ui.muted("Safqa IA rédige le courrier à partir des données du marché (décomptes, OS, cautions, "
+                           "réceptions) et des textes applicables. Relisez, complétez puis partagez en PDF.")],
+                 bgcolor=ui.TINT)]
+    urgent = [i for i in copilot.insights(app.store, app.company(), limit=20)
+              if any(a[1] == "letter" for a in i["actions"])]
+    if urgent:
+        c.append(ui.section("Suggérés par Safqa IA"))
+        c.extend(insight_card(app, i) for i in urgent[:3])
+    c.append(ui.section("Modèles"))
+    for kind, label in copilot.LETTERS:
+        c.append(ui.list_row(label, None, icon=LETTER_ICONS.get(kind, ft.Icons.MAIL_OUTLINE), icon_color=ui.PRIMARY,
+                             on_click=lambda e, k=kind: letter_dialog(app, app.state.get("chat_pid"), k)))
+    return "Courriers", [], None, page_body(c)
 
 
 # --------------------------------------------------------------------------
@@ -245,56 +277,89 @@ CITE_RE = re.compile(r"\[(A\d+(?:_\d+)?|A0|P\d+)\]")
 
 
 def assistant_view(app, params):
+    from .. import copilot_ui
     store = app.store
     projects = store.projects()
-    pid = int(params["pid"]) if params.get("pid") else app.state.get("chat_pid") or (projects[0]["id"] if projects else None)
+    if not projects:
+        return "Safqa IA", [], None, page_body([ui.empty("Créez un marché et chargez ses pièces pour poser vos questions.",
+                                                         ft.Icons.AUTO_AWESOME)])
+    ids = [p["id"] for p in projects]
+    pid = int(params["pid"]) if params.get("pid") else app.state.get("chat_pid")
+    if pid not in ids:
+        pid = ids[0]
     app.state["chat_pid"] = pid
     c = []
-    if not projects:
-        return "Assistant IA", [], None, page_body([ui.empty("Créez un marché et chargez ses pièces pour poser vos questions.")])
 
     def pick(e):
         app.state["chat_pid"] = int(e.control.value)
         app.refresh()
 
-    c.append(ft.Dropdown(label="Marché", value=str(pid), expand=True, on_select=pick,
-                         options=[ft.DropdownOption(key=str(p["id"]), text="%s - %s" % (p.get("ref") or "", (p.get("title") or "")[:45]))
-                                  for p in projects]))
-    st = app.sub
-    c.append(ui.muted("%d question(s) restante(s) ce mois-ci" % st.remaining("ai_question")))
+    claude = app.ai_client().configured
+    mode = ui.pill("Claude · %s" % app.store.get("ai_model", "") if claude else "Safqa IA intégrée · hors-ligne",
+                   ui.SUCCESS if claude else ui.ACCENT, "#ECFDF3" if claude else "#FFF4E5")
+    c.append(ft.Row([ft.Dropdown(label="Marché", value=str(pid), expand=True, on_select=pick,
+                                 options=[ft.DropdownOption(key=str(p["id"]), text="%s - %s" % (p.get("ref") or "", (p.get("title") or "")[:45]))
+                                          for p in projects])]))
+    c.append(ft.Row([mode, ui.muted("%d question(s) Claude restante(s)" % app.sub.remaining("ai_question"), 11.5)
+                     if claude else ui.text_btn("Activer Claude", lambda e: ai_form(app))], wrap=True, spacing=8))
     labels = {}
     for d in store.documents(pid):
         for a in articles_of(d):
             labels.setdefault(a.key, a)
     hist = store.chat_history(pid)
     if not hist:
-        sugg = ["Quelles sont mes obligations avant le démarrage des travaux ?",
-                "Comment sont calculées les pénalités de retard ?",
-                "Quels documents dois-je fournir pour la réception provisoire ?",
-                "Le maître d'ouvrage paie en retard : que puis-je réclamer ?",
-                "Quelle est ma marge prévisionnelle et quels postes dérapent ?"]
-        c.append(ui.card([ui.bold("Posez vos questions sur ce marché", 14)] +
-                         [ui.outline_btn(q, lambda e, q=q: send(app, pid, q), expand=True) for q in sugg], bgcolor=ui.TINT))
-    for h in hist:
+        c.append(ft.Container(ft.Column(
+            [ft.Row([ft.Icon(ft.Icons.AUTO_AWESOME, color=ui.ACCENT), ui.bold("Posez vos questions sur ce marché", 15)]),
+             ui.muted("Réponses fondées sur les articles de votre CPS, vos décomptes, OS, cautions et coûts, "
+                      "avec les citations."),
+             ft.Column([suggestion(app, pid, q) for q in copilot.SUGGESTIONS], spacing=6, tight=True)],
+            spacing=10, tight=True),
+            bgcolor=ui.TINT, border_radius=16, padding=14))
+    animate = app.state.pop("chat_animate", None)
+    for i, h in enumerate(hist):
         content = h["content"]
         if h["role"] == "assistant":
-            md = CITE_RE.sub(lambda m: "**[%s]**" % (("Art. %s" % labels[m.group(1)].number) if m.group(1) in labels else m.group(1)),
-                             content)
-            c.append(ft.Container(ft.Markdown(md, selectable=True, extension_set=ft.MarkdownExtensionSet.GITHUB_WEB),
-                                  bgcolor="#FFFFFF", border_radius=14, padding=12, border=ft.Border.all(1, ui.BORDER)))
+            md_text = CITE_RE.sub(lambda m: ("[Art. %s](safqa:%s)" % (labels[m.group(1)].number, m.group(1)))
+                                  if m.group(1) in labels else "**[%s]**" % m.group(1), content)
+            md = ft.Markdown(md_text, selectable=True, extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                             on_tap_link=lambda e: open_cite(app, pid, e.data))
+            if animate == pid and i == len(hist) - 1:
+                copilot_ui.animate_markdown(app, md, md_text)
+            c.append(ft.Row([ft.Container(ft.Icon(ft.Icons.AUTO_AWESOME, size=16, color="#FFFFFF"), padding=6,
+                                          border_radius=20, bgcolor=ui.ACCENT),
+                             ft.Container(md, bgcolor="#FFFFFF", border_radius=14, padding=12, expand=True,
+                                          border=ft.Border.all(1, ui.BORDER))],
+                            vertical_alignment=ft.CrossAxisAlignment.START, spacing=8))
         else:
             c.append(ft.Row([ft.Container(width=40),
-                             ft.Container(ui.txt(content, 14, color="#FFFFFF"), bgcolor=ui.PRIMARY, border_radius=14,
-                                          padding=12, expand=True)]))
+                             ft.Container(ui.txt(content, 14, color="#FFFFFF", selectable=True), bgcolor=ui.PRIMARY,
+                                          border_radius=14, padding=12, expand=True)]))
+    if hist:
+        c.append(ft.Row([ft.Chip(label=ui.txt(q, 12), on_click=lambda e, q=q: send(app, pid, q))
+                         for q in copilot.SUGGESTIONS[:4]], scroll=ft.ScrollMode.AUTO, spacing=6))
+        c.append(ft.Row([ui.text_btn("Rédiger un courrier", lambda e: copilot_ui.letter_dialog(app, pid))]))
     field = ft.TextField(hint_text="Votre question…", expand=True, border_radius=24, multiline=True, max_lines=4,
-                         bgcolor="#FFFFFF", on_submit=lambda e: send(app, pid, field.value))
+                         shift_enter=True, bgcolor="#FFFFFF", on_submit=lambda e: send(app, pid, field.value))
     bar = ft.Container(ft.Row([field, ft.IconButton(ft.Icons.SEND, icon_color="#FFFFFF", bgcolor=ui.PRIMARY,
-                                                    on_click=lambda e: send(app, pid, field.value))]),
+                                                    tooltip="Envoyer", on_click=lambda e: send(app, pid, field.value))]),
                        padding=10, bgcolor="#FFFFFF")
     body = ft.Column([ft.Container(ft.ListView(c, padding=14, spacing=10, expand=True, auto_scroll=True), expand=True), bar],
                      spacing=0, expand=True)
-    return "Assistant IA", [ft.IconButton(ft.Icons.DELETE_SWEEP_OUTLINED, icon_color="#FFFFFF", tooltip="Effacer",
-                                          on_click=lambda e: clear_chat(app, pid))], None, body
+    return "Safqa IA", [ft.IconButton(ft.Icons.DELETE_SWEEP_OUTLINED, icon_color="#FFFFFF", tooltip="Effacer",
+                                      on_click=lambda e: clear_chat(app, pid))], None, body
+
+
+def open_cite(app, pid, url):
+    from .. import nav
+    if isinstance(url, str) and url.startswith("safqa:"):
+        nav.show_article(app, pid, url.split(":", 1)[1])
+
+
+def suggestion(app, pid, q):
+    return ft.Container(ft.Row([ft.Icon(ft.Icons.CHAT_BUBBLE_OUTLINE, size=16, color=ui.PRIMARY),
+                                ui.txt(q, 13, color=ui.PRIMARY_DARK, expand=True)], spacing=8),
+                        bgcolor="#FFFFFF", border_radius=12, padding=ft.Padding(12, 10, 12, 10),
+                        border=ft.Border.all(1, ui.BORDER), ink=True, on_click=lambda e: send(app, pid, q))
 
 
 def clear_chat(app, pid):
@@ -307,26 +372,39 @@ def send(app, pid, question):
     q = (question or "").strip()
     if not q:
         return
+    store = app.store
+    client = app.ai_client()
+    s = erp.project_state(store, pid)
+    if not s:
+        return
+    if not client.configured:
+        # Built-in copilot: instant, offline, always available.
+        store.add_chat(pid, "user", q)
+        try:
+            text = copilot.answer(s, q, app.company())
+        except Exception as exc:  # noqa: BLE001 - shown in the chat
+            text = "Je n'ai pas pu analyser cette question (%s)." % exc
+        store.add_chat(pid, "assistant", text)
+        app.state["chat_animate"] = pid
+        app.refresh()
+        return
     ok, why = app.sub.can("ai_question")
     if not ok:
-        ui.info(app.page, "Assistant IA", why)
+        ui.info(app.page, "Safqa IA", why + "\n\nLa Safqa IA intégrée reste disponible hors-ligne.")
         return
-    client = app.ai_client()
-    if not client.configured:
-        ui.info(app.page, "Configuration requise", "Renseignez votre clé API ou le serveur Safqa dans Plus › Paramètres.")
-        return
-    store = app.store
     history = store.chat_history(pid)
     store.add_chat(pid, "user", q)
     app.refresh()
-    s = erp.project_state(store, pid)
     docs = [("%s - %s" % (d.get("doc_type"), d.get("filename")), articles_of(d)) for d in s["documents"]]
 
     async def go():
-        res = await app.run("Safqa analyse votre question…", ask, client, q, docs, project_context(s), history)
+        res = await app.run("Claude analyse votre question…", ask, client, q, docs, project_context(s), history)
         if res:
             store.add_chat(pid, "assistant", res[0])
             store.bump_usage("ai_question")
+        else:
+            store.add_chat(pid, "assistant", copilot.answer(s, q, app.company()))
+        app.state["chat_animate"] = pid
         app.refresh()
     app.task(go)
 
@@ -422,6 +500,9 @@ def company_form(app):
         ("name", "Raison sociale"), ("ice", "ICE"), ("rc", "Registre de commerce"), ("if_number", "Identifiant fiscal"),
         ("cnss", "N° CNSS"), ("patente", "Taxe professionnelle (patente)"), ("address", "Adresse"), ("city", "Ville"),
         ("phone", "Téléphone"), ("email", "E-mail"), ("manager", "Signataire / gérant")]]
+    specs.append({"key": "interest_rate_pct", "label": "Taux des intérêts moratoires (% / an)", "type": "number",
+                  "value": co.get("interest_rate_pct") or copilot.DEFAULT_INTEREST_RATE_PCT,
+                  "hint": "Taux directeur BAM + marge réglementaire, à vérifier"})
 
     def save(v):
         app.store.set_json("company", v)

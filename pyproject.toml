@@ -1,6 +1,6 @@
 [project]
 name = "safqa_erp"
-version = "2.1.0"
+version = "2.2.0"
 description = "Safqa ERP - gestion des marchés publics de travaux au Maroc"
 requires-python = ">=3.10"
 dependencies = [

@@ -1,6 +1,7 @@
 """Safqa ERP - Flet application shell: services, routing, shared helpers."""
 
 import asyncio
+import dataclasses
 import os
 import traceback
 
@@ -33,6 +34,7 @@ class App:
         self.sub = Subscription(self.store)
         self.picker = ft.FilePicker()
         self.share = ft.Share()
+        self.clipboard = ft.Clipboard()
         self.tab = 0
         self.state = {}
 
@@ -187,10 +189,32 @@ def build_views(app):
                                                                 bgcolor=ui.PRIMARY),
                              controls=[ui.txt("Une erreur est survenue :", 15, ft.FontWeight.W_600),
                                        ui.txt(text, 11, selectable=True)], scroll=ft.ScrollMode.AUTO))
-    page.views.clear()
-    page.views.extend(views)
+    # Re-use the View objects already on screen: replacing them makes Flutter
+    # rebuild its navigator pages, and any dialog opened from the old page can
+    # then no longer be closed (Enregistrer / Annuler appear dead).
+    final = []
+    for i, v in enumerate(views):
+        cur = page.views[i] if i < len(page.views) else None
+        if cur is not None and cur.route == v.route:
+            adopt(cur, v)
+            final.append(cur)
+        else:
+            final.append(v)
+    if [id(v) for v in page.views] != [id(v) for v in final]:
+        page.views.clear()
+        page.views.extend(final)
     page.update()
     open_requested_form(app, parts, params)
+
+
+_VIEW_FIELDS = [f.name for f in dataclasses.fields(ft.View)
+                if not f.name.startswith("_") and f.name not in ("data", "key")]
+
+
+def adopt(cur, new):
+    """Copy a freshly built view's content into the view already displayed."""
+    for name in _VIEW_FIELDS:
+        setattr(cur, name, getattr(new, name))
 
 
 def close_stale_dialogs(page):
@@ -250,26 +274,64 @@ def root_view(app):
     st = app.sub.status()
     search = ft.IconButton(ft.Icons.SEARCH, icon_color="#FFFFFF", tooltip="Rechercher",
                            on_click=lambda e: app.go("/module/recherche"))
+    ai = ft.IconButton(ft.Icons.AUTO_AWESOME, icon_color="#FFD089", tooltip="Safqa IA",
+                       on_click=lambda e: app.go("/module/assistant"))
     appbar = ft.AppBar(title=ft.Column([ui.txt(title, 19, ft.FontWeight.W_700, "#FFFFFF"),
                                         ui.txt((app.company().get("name") or "Safqa ERP") + " · " + st["label"],
                                                11.5, color="#CFE3EA", max_lines=1)], spacing=0, tight=True),
-                       bgcolor=ui.PRIMARY, toolbar_height=62, actions=[search] + (actions or []))
+                       bgcolor=ui.PRIMARY, toolbar_height=62, actions=[ai, search] + (actions or []))
     badges = nav_badges(app, erp)
-    destinations = []
-    for i, (lbl, icon, sicon) in enumerate(TABS):
-        b = badges.get(i)
 
-        def badged(ic, b=b):
-            if not b:
-                return ic
-            return ft.Icon(ic, badge=ft.Badge(label=str(b), bgcolor=ui.DANGER, text_color="#FFFFFF"))
-        destinations.append(ft.NavigationBarDestination(icon=badged(icon), selected_icon=badged(sicon), label=lbl))
-    return ft.View(route="/", appbar=appbar, bgcolor=ui.BG, padding=0, floating_action_button=fab,
-                   can_pop=app.tab == 0, on_confirm_pop=back_to_home if app.tab != 0 else None,
-                   navigation_bar=ft.NavigationBar(
+    def badged(ic, b):
+        if not b:
+            return ic
+        return ft.Icon(ic, badge=ft.Badge(label=str(b), bgcolor=ui.DANGER, text_color="#FFFFFF"))
+
+    # Fade in when the tab changes (not on a plain refresh, so saving a form does not flash).
+    content = ft.Container(body, expand=True, animate_opacity=ft.Animation(260, ft.AnimationCurve.EASE_OUT))
+    if app.state.get("shown_tab") != app.tab:
+        app.state["shown_tab"] = app.tab
+        content.opacity = 0.0
+
+        async def fade_in():
+            await asyncio.sleep(0.03)
+            content.opacity = 1.0
+            try:
+                content.update()
+            except Exception:  # noqa: BLE001 - replaced meanwhile
+                pass
+        try:
+            app.task(fade_in)
+        except Exception:  # noqa: BLE001 - no event loop (tests)
+            content.opacity = 1.0
+    common = dict(route="/", appbar=appbar, bgcolor=ui.BG, padding=0, floating_action_button=fab,
+                  can_pop=app.tab == 0, on_confirm_pop=back_to_home if app.tab != 0 else None)
+    if is_wide(app.page):
+        rail = ft.NavigationRail(
+            selected_index=app.tab, on_change=change, bgcolor="#FFFFFF", indicator_color=ui.TINT,
+            label_type=ft.NavigationRailLabelType.ALL, min_width=88, group_alignment=-0.9,
+            leading=ft.Container(ft.Icon(ft.Icons.APARTMENT, color=ui.PRIMARY, size=30), padding=ft.Padding(0, 12, 0, 8)),
+            destinations=[ft.NavigationRailDestination(icon=badged(icon, badges.get(i)),
+                                                       selected_icon=badged(sicon, badges.get(i)), label=lbl)
+                          for i, (lbl, icon, sicon) in enumerate(TABS)])
+        return ft.View(controls=[ft.Row([rail, ft.VerticalDivider(width=1, color=ui.BORDER),
+                                         ft.Container(content, expand=True)], spacing=0, expand=True)], **common)
+    return ft.View(navigation_bar=ft.NavigationBar(
                        selected_index=app.tab, on_change=change, bgcolor="#FFFFFF", indicator_color=ui.TINT,
-                       destinations=destinations),
-                   controls=[ft.Container(body, expand=True)])
+                       destinations=[ft.NavigationBarDestination(icon=badged(icon, badges.get(i)),
+                                                                 selected_icon=badged(sicon, badges.get(i)), label=lbl)
+                                     for i, (lbl, icon, sicon) in enumerate(TABS)]),
+                   controls=[content], **common)
+
+
+WIDE = 900
+
+
+def is_wide(page):
+    try:
+        return (page.width or 0) >= WIDE
+    except Exception:  # noqa: BLE001 - not known yet
+        return False
 
 
 def nav_badges(app, erp):
@@ -334,6 +396,15 @@ def main(page: ft.Page):
             page.views.remove(e.view)
             await page.push_route(page.views[-1].route)
     page.on_view_pop = view_pop
+
+    def resized(e=None):
+        # Rebuild only when crossing the phone / tablet breakpoint.
+        wide = is_wide(page)
+        if app.state.get("wide") != wide:
+            app.state["wide"] = wide
+            app.refresh()
+    app.state["wide"] = is_wide(page)
+    page.on_resize = resized
 
     if system_property("debug.safqa.selftest") == "1":
         ok, lines = selftest.run(os.path.join(app.dir, "selftest"))

@@ -75,6 +75,7 @@ def cite(app, pid, item, doc_id=None):
 # --------------------------------------------------------------------------
 
 def quick_create(app):
+    from .copilot_ui import letter_dialog
     from .views import finance, more, projects, tenders
     store = app.store
     projects_list = store.projects()
@@ -121,6 +122,8 @@ def quick_create(app):
         ("Attachement", "Quantités exécutées", ft.Icons.STRAIGHTEN, ui.SUCCESS, attachement),
         ("Décompte", "Situation de travaux", ft.Icons.RECEIPT_LONG, ui.SUCCESS, decompte),
         ("Journal de chantier", "Entrée du jour", ft.Icons.MENU_BOOK, ui.MUTED, journal),
+        ("Courrier", "Relance, prolongation, mainlevée… rédigé par Safqa IA", ft.Icons.MAIL_OUTLINE, ui.ACCENT,
+         lambda: letter_dialog(app)),
         ("Tiers", "Client, fournisseur, banque", ft.Icons.CONTACTS, ui.MUTED, lambda: more.tier_form(app)),
     ]
     rows = [ui.list_row(t, sub, icon=icon, icon_color=color, on_click=go(fn)) for t, sub, icon, color, fn in entries]

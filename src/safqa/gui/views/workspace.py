@@ -107,6 +107,8 @@ def tab_synthese(x):
     c = [ui.pills_row([ui.status_pill(p.get("status") or "en_cours", erp.label("project_status", p.get("status") or "en_cours"))] +
                       [ui.pill(v, ui.MUTED, "#F2F4F7") for v in (p.get("category"), p.get("location"), p.get("manager")) if v])]
     c.append(quick_actions(x))
+    from ..copilot_ui import insights_section
+    c.extend(insights_section(x.app, x.pid, limit=3))
     links = []
     if p.get("tender_id") and x.store.get_row("tenders", p["tender_id"]):
         t = x.store.get_row("tenders", p["tender_id"])
@@ -214,6 +216,7 @@ def edit_terms(x):
 
 def quick_actions(x):
     """One-tap shortcuts to the most frequent operations on a contract."""
+    from ..copilot_ui import letter_dialog
     from .finance import expense_form
 
     def tab(key):
@@ -225,6 +228,7 @@ def quick_actions(x):
         ("Dépense", ft.Icons.SHOPPING_CART, lambda e: expense_form(x.app, project_id=x.pid)),
         ("Journal", ft.Icons.MENU_BOOK, lambda e: journal_form(x)),
         ("Document", ft.Icons.UPLOAD_FILE, lambda e: x.app.task(add_document, x)),
+        ("Courrier", ft.Icons.MAIL_OUTLINE, lambda e: letter_dialog(x.app, x.pid)),
         ("Assistant IA", ft.Icons.AUTO_AWESOME, lambda e: x.app.go("/module/assistant?pid=%s" % x.pid)),
     ]
     return ft.Row([ft.Chip(label=ui.txt(lbl, 12.5), leading=ft.Icon(icon, size=16, color=ui.PRIMARY), on_click=fn)

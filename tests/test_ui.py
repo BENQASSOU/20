@@ -28,6 +28,7 @@ def headless(monkeypatch):
     monkeypatch.setattr(ft.BaseControl, "update", lambda self: None)
     monkeypatch.setattr(ft, "FilePicker", H.FakeService)
     monkeypatch.setattr(ft, "Share", H.FakeService)
+    monkeypatch.setattr(ft, "Clipboard", H.FakeService)
     old = os.environ.get("FLET_APP_STORAGE_DATA")
     yield
     if old is None:
@@ -56,7 +57,7 @@ def test_every_screen_with_empty_database():
     ex = H.Explorer(None, empty=True)
     for s in ([("/", t, {}) for t in range(5)] + [("/", 3, {"finance_tab": i}) for i in range(4)] +
               [("/module/%s" % m, 4, {}) for m in ("echeancier", "tiers", "assistant", "rapports",
-                                                     "parametres", "abonnement", "diagnostic", "garanties")]):
+                                                     "parametres", "abonnement", "diagnostic", "garanties", "courriers")]):
         ex.explore(s)
     assert not ex.failures, _report(ex)
 
@@ -81,4 +82,24 @@ def test_deep_link_opens_form_once_and_stale_dialogs_close(template):
         assert len([x for x in page.dialogs if isinstance(x, ft.AlertDialog)]) == 1
         page.navigate("/")  # leaving the screen closes it
         assert not forms[0].open
+    app.store.close()
+
+
+def test_refresh_keeps_views_so_dialogs_can_close(template):
+    """Replacing View objects makes Flutter lose open dialogs (Enregistrer/Annuler dead)."""
+    path, _ = template
+    ex = H.Explorer(path)
+    page, app, d = ex.fresh(("/", 0, {}))
+    pid = app.store.projects()[0]["id"]
+    root = page.views[0]
+    app.refresh()
+    assert page.views[0] is root
+    page.navigate("/marche/%s?tab=decomptes" % pid)
+    assert page.views[0] is root
+    ws = page.views[1]
+    app.refresh()
+    page.navigate("/marche/%s?tab=couts" % pid)
+    assert page.views[1] is ws and page.views[0] is root
+    page.navigate("/")
+    assert len(page.views) == 1 and page.views[0] is root
     app.store.close()

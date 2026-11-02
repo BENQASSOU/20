@@ -36,6 +36,9 @@ class FakeService:
     async def share_files(self, files, **kw):
         self.calls.append(("share_files", files))
 
+    async def set(self, value):
+        self.calls.append(("clipboard", value))
+
 
 class FakePage:
     def __init__(self):
@@ -325,7 +328,7 @@ def all_screens(store):
     for t in store.all("tenders"):
         screens.append(("/ao/%s" % t["id"], 2, {}))
     for m in ("echeancier", "tiers", "assistant", "rapports", "parametres", "abonnement", "diagnostic", "garanties",
-              "recherche"):
+              "recherche", "courriers"):
         screens.append(("/module/%s" % m, 4, {}))
     for q in ("12/2026", "béton", "caution", "témara"):
         screens.append(("/module/recherche", 4, {"search_query": q}))
