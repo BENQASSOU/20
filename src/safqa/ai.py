@@ -48,7 +48,10 @@ def _ssl_context():
 
 
 class ClaudeClient:
-    def __init__(self, api_key="", model=DEFAULT_MODEL, base_url="", license_key="", timeout=600):
+    def __init__(self, api_key="", model=DEFAULT_MODEL, base_url="", license_key="", timeout=600,
+                 token="", org_id=None):
+        self.token = token or ""
+        self.org_id = org_id
         self.api_key = (api_key or "").strip()
         self.model = model or DEFAULT_MODEL
         self.base_url = (base_url or API_URL).rstrip("/")
@@ -57,7 +60,7 @@ class ClaudeClient:
 
     @property
     def configured(self):
-        return bool(self.api_key) or (self.base_url != API_URL and bool(self.license_key))
+        return bool(self.api_key) or (self.base_url != API_URL and bool(self.license_key or self.token))
 
     def _headers(self):
         h = {"content-type": "application/json", "anthropic-version": API_VERSION,
@@ -66,6 +69,9 @@ class ClaudeClient:
             h["x-api-key"] = self.api_key
         if self.license_key:
             h["x-safqa-license"] = self.license_key
+        if self.token:
+            h["authorization"] = "Bearer " + self.token
+            h["x-safqa-org"] = str(self.org_id or "")
         return h
 
     def message(self, system, messages, max_tokens=32000, effort="high", schema=None,

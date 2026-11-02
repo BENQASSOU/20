@@ -265,9 +265,11 @@ class Form:
             self.controls[s["key"]] = c
             return ft.Row([c])
         if t == "bool":
-            c = ft.Switch(label=s["label"], value=bool(value), on_change=self._changed if self.on_change else None)
+            c = ft.Switch(value=bool(value), on_change=self._changed if self.on_change else None)
             self.controls[s["key"]] = c
-            return c
+            # Label beside the switch wraps on small screens instead of overflowing.
+            return ft.Row([c, txt(s["label"], 13.5, expand=True)], spacing=8,
+                          vertical_alignment=ft.CrossAxisAlignment.CENTER)
         if t == "date":
             c = ft.TextField(label=label, value=fmt_date(value) if value else "", hint_text="JJ/MM/AAAA",
                              keyboard_type=ft.KeyboardType.DATETIME, border_radius=10, expand=True,

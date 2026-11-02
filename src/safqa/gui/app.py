@@ -2,6 +2,7 @@
 
 import asyncio
 import dataclasses
+import time
 import os
 import traceback
 
@@ -37,6 +38,9 @@ class App:
         self.clipboard = ft.Clipboard()
         self.tab = 0
         self.state = {}
+        from ..cloud import Account
+        self.account = Account(self.store)
+        self.sync_status = {"state": "idle", "error": None}
 
     # ------------------------------------------------------------ navigation
     def go(self, route):
@@ -62,8 +66,12 @@ class App:
 
     # ------------------------------------------------------------ AI
     def ai_client(self):
-        mode = self.store.get("ai_mode", "proxy" if config.DEFAULT_PROXY_URL else "direct")
         model = self.store.get("ai_model", DEFAULT_MODEL)
+        acc = self.account
+        if acc.connected and acc.org_id and acc.me.get("ai") and not self.store.get("api_key"):
+            # AI included in the company's Safqa Cloud subscription.
+            return ClaudeClient(model=model, base_url=acc.url + "/ai", token=acc.token, org_id=acc.org_id)
+        mode = self.store.get("ai_mode", "proxy" if config.DEFAULT_PROXY_URL else "direct")
         if mode == "proxy":
             return ClaudeClient(model=model, base_url=self.store.get("proxy_url", config.DEFAULT_PROXY_URL),
                                 license_key=self.store.get("license_key", ""))
@@ -85,6 +93,55 @@ class App:
         finally:
             if busy:
                 busy.close()
+
+    # ------------------------------------------------------------ Safqa Cloud sync
+    def sync_now(self, manual=False):
+        self.task(self._sync, manual)
+
+    async def _sync(self, manual=False):
+        from .. import cloud
+        acc = self.account
+        if self.sync_status.get("state") == "running" or not (acc.connected and acc.org_id):
+            return
+        self.sync_status = {"state": "running", "error": None}
+        if manual:
+            self.refresh()
+        try:
+            res = await asyncio.to_thread(cloud.synchronize, self.store, acc, self.docs_dir)
+        except cloud.CloudError as exc:
+            self.sync_status = {"state": "idle", "error": str(exc), "at": time.time()}
+            if exc.status == 401:                      # session revoked or expired
+                acc.forget()
+                ui.snack(self.page, "Session expirée : reconnectez-vous (Plus › Compte & équipe).", error=True)
+                self.refresh()
+            elif manual:
+                ui.snack(self.page, str(exc), error=True)
+                self.refresh()
+            return
+        except Exception as exc:  # noqa: BLE001
+            log("ERROR sync " + traceback.format_exc())
+            self.sync_status = {"state": "idle", "error": "Erreur de synchronisation : %s" % exc, "at": time.time()}
+            return
+        self.sync_status = {"state": "idle", "error": None, "at": time.time(), "last": res}
+        if manual:
+            ui.snack(self.page, "Synchronisé : %d envoyé(s), %d reçu(s)" % (res["sent"], res["received"]))
+        if res["received"] or manual:
+            self.refresh()
+
+    async def sync_loop(self):
+        """Background sync: quickly after local changes, otherwise every 2 minutes."""
+        last = 0.0
+        while True:
+            await asyncio.sleep(15)
+            try:
+                acc = self.account
+                if not (acc.connected and acc.org_id):
+                    continue
+                if self.store.sync_pending() or time.time() - last > 120:
+                    last = time.time()
+                    await self._sync()
+            except Exception:  # noqa: BLE001 - never stop the loop
+                log("ERROR sync loop " + traceback.format_exc())
 
     def task(self, coro_fn, *args):
         self.page.run_task(coro_fn, *args)
@@ -276,10 +333,11 @@ def root_view(app):
                            on_click=lambda e: app.go("/module/recherche"))
     ai = ft.IconButton(ft.Icons.AUTO_AWESOME, icon_color="#FFD089", tooltip="Safqa IA",
                        on_click=lambda e: app.go("/module/assistant"))
+    sync = cloud_indicator(app)
     appbar = ft.AppBar(title=ft.Column([ui.txt(title, 19, ft.FontWeight.W_700, "#FFFFFF"),
                                         ui.txt((app.company().get("name") or "Safqa ERP") + " · " + st["label"],
                                                11.5, color="#CFE3EA", max_lines=1)], spacing=0, tight=True),
-                       bgcolor=ui.PRIMARY, toolbar_height=62, actions=[ai, search] + (actions or []))
+                       bgcolor=ui.PRIMARY, toolbar_height=62, actions=[sync, ai, search] + (actions or []))
     badges = nav_badges(app, erp)
 
     def badged(ic, b):
@@ -325,6 +383,21 @@ def root_view(app):
 
 
 WIDE = 900
+
+
+def cloud_indicator(app):
+    acc = app.account
+    if not acc.connected:
+        icon, color, tip = ft.Icons.CLOUD_OFF_OUTLINED, "#9FC3D1", "Safqa Cloud : non connecté"
+    elif app.sync_status.get("state") == "running":
+        icon, color, tip = ft.Icons.CLOUD_SYNC, "#FFFFFF", "Synchronisation…"
+    elif app.sync_status.get("error"):
+        icon, color, tip = ft.Icons.CLOUD_OFF, "#FDA29B", app.sync_status["error"]
+    elif app.store.sync_pending():
+        icon, color, tip = ft.Icons.CLOUD_UPLOAD_OUTLINED, "#FFD089", "Modifications en attente d'envoi"
+    else:
+        icon, color, tip = ft.Icons.CLOUD_DONE_OUTLINED, "#A6F4C5", "Synchronisé"
+    return ft.IconButton(icon, icon_color=color, tooltip=tip, on_click=lambda e: app.go("/module/compte"))
 
 
 def is_wide(page):
@@ -413,3 +486,6 @@ def main(page: ft.Page):
             demo.load_demo(app.store)
     build_views(app)
     log("STARTED version %s" % __version__)
+    if app.account.connected:
+        app.sync_now()
+    app.task(app.sync_loop)

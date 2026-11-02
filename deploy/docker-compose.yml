@@ -1,0 +1,67 @@
+# Safqa Cloud on your own server (VPS in Morocco or elsewhere).
+#   1. cp .env.example .env  and fill it in
+#   2. docker compose up -d
+# HTTPS certificates are obtained automatically by Caddy for SAFQA_DOMAIN.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: safqa
+      POSTGRES_USER: safqa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD manquant}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U safqa -d safqa"]
+      interval: 10s
+      retries: 10
+
+  app:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://safqa:${POSTGRES_PASSWORD}@db:5432/safqa
+      SAFQA_ENV: production
+      SAFQA_DATA_KEY: ${SAFQA_DATA_KEY:?SAFQA_DATA_KEY manquant}
+      SAFQA_ADMIN_EMAILS: ${SAFQA_ADMIN_EMAILS:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SAFQA_LICENSE_SECRET: ${SAFQA_LICENSE_SECRET:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [app]
+    ports: ["80:80", "443:443"]
+    environment:
+      SAFQA_DOMAIN: ${SAFQA_DOMAIN:?SAFQA_DOMAIN manquant}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+
+  backup:                         # encrypted data dumped every night, 30 days kept
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on: [db]
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./backups:/backups
+    entrypoint: ["sh", "-c", "while true; do pg_dump -h db -U safqa -Fc safqa > /backups/safqa-$$(date +%F).dump && find /backups -name 'safqa-*.dump' -mtime +30 -delete; sleep 86400; done"]
+
+volumes:
+  pgdata:
+  caddy_data:

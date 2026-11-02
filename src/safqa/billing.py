@@ -104,6 +104,9 @@ class Subscription:
 
     def status(self, today=None):
         today = today or date.today()
+        cloud = self._cloud_status(today)
+        if cloud:
+            return cloud
         key = self.store.get("license_key")
         if key:
             ok, plan, expiry, msg = check_key(key, today)
@@ -120,6 +123,27 @@ class Subscription:
         return {"plan": None, "limits": FREE_LIMITS, "label": "Gratuit", "expiry": None,
                 "trial": False, "active": False,
                 "message": "Essai terminé - choisissez un abonnement"}
+
+    def _cloud_status(self, today):
+        """Plan of the Safqa Cloud company space, when this device is connected."""
+        if not self.store.get("cloud_token") or not self.store.get("cloud_org"):
+            return None
+        p = self.store.get_json("cloud_plan") or {}
+        if not p:
+            return None
+        lim = dict(FREE_LIMITS)
+        lim.update({k: v for k, v in (p.get("limits") or {}).items() if v is not None})
+        until = None
+        try:
+            until = datetime.strptime(p.get("until") or "", "%Y-%m-%d").date()
+        except ValueError:
+            pass
+        active = bool(p.get("active"))
+        msg = ("%s actif%s" % (p.get("label"), (" jusqu'au %s" % until.strftime("%d/%m/%Y")) if until else "")
+               if active else "Abonnement de l'entreprise inactif - contactez Safqa")
+        return {"plan": p.get("plan") if active else None, "limits": lim, "label": p.get("label") or "Gratuit",
+                "expiry": until, "trial": p.get("plan") == "TRIAL", "active": active, "message": msg,
+                "cloud": True}
 
     def activate(self, key):
         ok, plan, expiry, msg = check_key(key)

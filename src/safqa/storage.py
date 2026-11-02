@@ -101,7 +101,40 @@ CREATE TABLE IF NOT EXISTS measurements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER, item_id INTEGER, date TEXT, qty REAL, ref TEXT, notes TEXT
 );
+
+-- Safqa Cloud: rows changed on this device and not yet sent.
+CREATE TABLE IF NOT EXISTS sync_dirty (tbl TEXT, rid TEXT, v INTEGER DEFAULT 1, PRIMARY KEY (tbl, rid));
+CREATE TABLE IF NOT EXISTS sync_flags (k TEXT PRIMARY KEY, v INTEGER);
+INSERT OR IGNORE INTO sync_flags(k, v) VALUES ('applying', 0);
 """
+
+# Tables shared through Safqa Cloud (parents first) and their key columns.
+SYNC_TABLES = ["settings", "tiers", "projects", "tenders", "documents", "checklist", "orders", "items",
+               "decomptes", "receptions", "chat", "expenses", "budget_lines", "guarantees", "journal", "tasks",
+               "measurements"]
+SYNC_KEYS = {"checklist": ("project_id", "code"), "settings": ("key",)}
+SYNCED_SETTINGS = ("company",)          # never API keys, tokens or licence
+LOCAL_COLUMNS = {"documents": ("path",)}  # device-specific, not shared
+ID_RANGE = 10 ** 9
+
+
+def _key_expr(table, ref):
+    cols = SYNC_KEYS.get(table, ("id",))
+    return " || '|' || ".join("CAST(%s.%s AS TEXT)" % (ref, c) for c in cols)
+
+
+def _triggers():
+    out = []
+    for t in SYNC_TABLES:
+        for ev, ref in (("INSERT", "NEW"), ("UPDATE", "NEW"), ("DELETE", "OLD")):
+            cond = "(SELECT v FROM sync_flags WHERE k='applying') = 0"
+            if t == "settings":
+                cond += " AND %s.key IN (%s)" % (ref, ",".join("'%s'" % k for k in SYNCED_SETTINGS))
+            out.append("CREATE TRIGGER IF NOT EXISTS sync_%s_%s AFTER %s ON %s WHEN %s BEGIN "
+                       "INSERT INTO sync_dirty(tbl, rid, v) VALUES ('%s', %s, 1) "
+                       "ON CONFLICT(tbl, rid) DO UPDATE SET v = v + 1; END;"
+                       % (t, ev.lower(), ev, t, cond, t, _key_expr(t, ref)))
+    return "\n".join(out)
 
 # Columns added after the first release: (table, column, declaration)
 MIGRATIONS = [
@@ -111,6 +144,7 @@ MIGRATIONS = [
     ("projects", "category", "TEXT"),
     ("projects", "manager", "TEXT"),
     ("projects", "start_planned", "TEXT"),
+    ("documents", "file_sha", "TEXT"),
 ]
 
 JSON_FIELDS = {"terms_json": "terms", "articles_json": "articles",
@@ -135,7 +169,14 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self._migrate()
+        self.conn.executescript(_triggers())
+        self.conn.execute("UPDATE sync_flags SET v=0 WHERE k='applying'")
         self.conn.commit()
+        self._cols = {}
+        try:
+            self.id_base = int(self.get("sync_id_base") or 0)
+        except ValueError:
+            self.id_base = 0
 
     def _migrate(self):
         for table, col, decl in MIGRATIONS:
@@ -196,6 +237,12 @@ class Store:
 
     def insert(self, table, data):
         data = self._prep(data)
+        if self.id_base and "id" not in data and table not in SYNC_KEYS and table in SYNC_TABLES:
+            # Each synced device writes ids in its own range: no collision across phones.
+            with self._lock:
+                top = self.conn.execute("SELECT MAX(id) FROM %s WHERE id > ? AND id < ?" % table,
+                                        (self.id_base, self.id_base + ID_RANGE)).fetchone()[0]
+            data["id"] = (top or self.id_base) + 1
         cols = ",".join(data)
         marks = ",".join("?" * len(data))
         return self.x("INSERT INTO %s (%s) VALUES (%s)" % (table, cols, marks), tuple(data.values()))
@@ -359,6 +406,129 @@ class Store:
                     return fh.read()
             finally:
                 os.remove(tmp)
+
+    # ------------------------------------------------------------ Safqa Cloud sync
+    def columns(self, table):
+        if table not in self._cols:
+            with self._lock:
+                self._cols[table] = [r[1] for r in self.conn.execute("PRAGMA table_info(%s)" % table)]
+        return self._cols[table]
+
+    def set_id_base(self, device_no):
+        self.id_base = int(device_no or 0) * ID_RANGE
+        self.set("sync_id_base", str(self.id_base))
+
+    def sync_pending(self):
+        return self.scalar("SELECT COUNT(*) FROM sync_dirty") or 0
+
+    def _where_key(self, table, rid):
+        cols = SYNC_KEYS.get(table, ("id",))
+        parts = rid.split("|", len(cols) - 1)
+        if len(parts) != len(cols):
+            return None, None
+        return " AND ".join("CAST(%s AS TEXT)=?" % c for c in cols), parts
+
+    def sync_take(self, limit=500):
+        """Pending local changes, as sent to the server."""
+        out = []
+        with self._lock:
+            dirty = self.conn.execute("SELECT tbl, rid, v FROM sync_dirty LIMIT ?", (limit,)).fetchall()
+            for tbl, rid, v in dirty:
+                where, args = self._where_key(tbl, rid)
+                row = self.conn.execute("SELECT * FROM %s WHERE %s" % (tbl, where), args).fetchone() if where else None
+                item = {"t": tbl, "id": rid, "v": v}
+                if row is None:
+                    item["deleted"] = True
+                else:
+                    d = dict(row)
+                    for c in LOCAL_COLUMNS.get(tbl, ()):
+                        d.pop(c, None)
+                    item["d"] = d
+                out.append(item)
+        return out
+
+    def sync_done(self, items):
+        with self._lock:
+            for it in items:
+                self.conn.execute("DELETE FROM sync_dirty WHERE tbl=? AND rid=? AND v=?", (it["t"], it["id"], it["v"]))
+            self.conn.commit()
+
+    def sync_apply(self, changes):
+        """Write rows received from the server without marking them dirty."""
+        order = {t: i for i, t in enumerate(SYNC_TABLES)}
+        changes = sorted(changes, key=lambda c: (bool(c.get("deleted")), order.get(c.get("t"), 99)))
+        with self._lock:
+            try:
+                self.conn.execute("UPDATE sync_flags SET v=1 WHERE k='applying'")
+                for ch in changes:
+                    t = ch.get("t")
+                    if t not in order:
+                        continue
+                    if t == "settings" and str(ch.get("id")) not in SYNCED_SETTINGS:
+                        continue
+                    where, args = self._where_key(t, str(ch.get("id")))
+                    if not where:
+                        continue
+                    if ch.get("deleted"):
+                        self.conn.execute("DELETE FROM %s WHERE %s" % (t, where), args)
+                        continue
+                    cols = self.columns(t)
+                    d = {k: v for k, v in (ch.get("d") or {}).items() if k in cols and k not in LOCAL_COLUMNS.get(t, ())}
+                    if not d:
+                        continue
+                    keep = LOCAL_COLUMNS.get(t, ())
+                    if keep:
+                        old = self.conn.execute("SELECT %s FROM %s WHERE %s" % (",".join(keep), t, where), args).fetchone()
+                        if old:
+                            d.update(dict(zip(keep, old)))
+                    self.conn.execute("INSERT OR REPLACE INTO %s (%s) VALUES (%s)" % (
+                        t, ",".join(d), ",".join("?" * len(d))), tuple(d.values()))
+                self.conn.execute("UPDATE sync_flags SET v=0 WHERE k='applying'")
+                self.conn.commit()
+            except BaseException:
+                self.conn.rollback()
+                raise
+
+    def sync_local_write(self, sql, args=()):
+        """Device-only bookkeeping (e.g. a downloaded file path): not sent."""
+        with self._lock:
+            try:
+                self.conn.execute("UPDATE sync_flags SET v=1 WHERE k='applying'")
+                self.conn.execute(sql, args)
+                self.conn.execute("UPDATE sync_flags SET v=0 WHERE k='applying'")
+                self.conn.commit()
+            except BaseException:
+                self.conn.rollback()
+                raise
+
+    def sync_mark_all(self):
+        """Queue every shared row (first device of a new company space)."""
+        with self._lock:
+            for t in SYNC_TABLES:
+                # (an INSERT ... SELECT needs a WHERE before ON CONFLICT in SQLite)
+                where = " WHERE key IN (%s)" % ",".join("'%s'" % k for k in SYNCED_SETTINGS) if t == "settings" else " WHERE 1"
+                self.conn.execute("INSERT INTO sync_dirty(tbl, rid, v) SELECT '%s', %s, 1 FROM %s%s "
+                                  "ON CONFLICT(tbl, rid) DO UPDATE SET v = v + 1"
+                                  % (t, _key_expr(t, t), t, where))
+            self.conn.commit()
+
+    def sync_wipe(self):
+        """Remove shared data from this device (before loading a company space)."""
+        with self._lock:
+            try:
+                self.conn.execute("UPDATE sync_flags SET v=1 WHERE k='applying'")
+                for t in SYNC_TABLES:
+                    if t == "settings":
+                        self.conn.execute("DELETE FROM settings WHERE key IN (%s)" %
+                                          ",".join("'%s'" % k for k in SYNCED_SETTINGS))
+                    else:
+                        self.conn.execute("DELETE FROM %s" % t)
+                self.conn.execute("DELETE FROM sync_dirty")
+                self.conn.execute("UPDATE sync_flags SET v=0 WHERE k='applying'")
+                self.conn.commit()
+            except BaseException:
+                self.conn.rollback()
+                raise
 
     def is_empty(self):
         return not self.scalar("SELECT COUNT(*) FROM projects") and not self.scalar("SELECT COUNT(*) FROM tenders")

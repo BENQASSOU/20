@@ -8,3 +8,6 @@ src/safqa/_license_secret.py
 build/
 signing/
 *.jks
+src/safqa/_cloud.py
+deploy/.env
+deploy/backups/

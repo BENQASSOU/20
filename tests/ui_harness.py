@@ -8,6 +8,7 @@ and reports every exception.  No browser or Flutter engine needed.
 
 import asyncio
 import dataclasses
+import json
 import inspect
 import os
 import shutil
@@ -213,9 +214,13 @@ class Explorer:
         page.on_route_change = lambda e=None: appmod.build_views(app)
         route, tab, state = screen
         app.tab = tab
+        state = dict(state)
+        for k, v in (state.pop("_settings", None) or {}).items():
+            app.store.set(k, v)
         app.state.update(state)
         page.route = route
         appmod.build_views(app)
+        drain(page, self.loop)
         return page, app, d
 
     def fail(self, where, exc_text):
@@ -335,5 +340,16 @@ def all_screens(store):
     for t in store.tiers():
         screens.append(("/tiers/%s" % t["id"], 4, {}))
     screens.append(("/module/inconnu", 4, {}))
+    # Safqa Cloud account screens (unreachable server: no network in tests)
+    me = {"user": {"id": 1, "email": "chef@btp.ma", "name": "Chef", "totp_enabled": False, "must_change_pw": True},
+          "orgs": [{"id": 7, "name": "BTP Atlas", "role": "owner", "role_label": "Propriétaire", "label": "Essai Pro",
+                    "plan": "TRIAL", "active": True, "until": "2099-01-01", "limits": {"max_projects": 10}},
+                   {"id": 8, "name": "Autre", "role": "viewer", "role_label": "Lecture seule", "label": "Pro",
+                    "plan": "PRO", "active": True, "until": None, "limits": {}}], "ai": True}
+    base = {"cloud_url": "https://127.0.0.1:9", "cloud_token": "t", "cloud_me": json.dumps(me)}
+    screens.append(("/module/compte", 4, {}))
+    screens.append(("/module/compte", 4, {"_settings": base}))
+    screens.append(("/module/compte", 4, {"_settings": dict(base, cloud_org="7", sync_device_7="2")}))
+    screens.append(("/module/compte", 4, {"_settings": dict(base, cloud_org="8", sync_device_8="3")}))
     screens.append(("/", 1, {"projects_filter": "tous", "projects_query": "école"}))
     return screens

@@ -15,6 +15,7 @@ from .. import ui
 from ..app import page_body, sub_appbar
 
 MODULES = [
+    ("compte", "Compte & équipe", "Safqa Cloud, synchronisation", ft.Icons.CLOUD_OUTLINED, ui.PRIMARY),
     ("echeancier", "Échéancier", "Toutes les dates clés", ft.Icons.EVENT_NOTE, ui.INFO),
     ("tiers", "Tiers", "Clients, fournisseurs, banques", ft.Icons.CONTACTS_OUTLINED, "#7A5AF8"),
     ("assistant", "Safqa IA", "Questions, conseils, citations", ft.Icons.AUTO_AWESOME, ui.ACCENT),
@@ -41,13 +42,19 @@ def build(app):
 def module_view(app, key, params):
     fn = {"echeancier": agenda_view, "tiers": tiers_view, "assistant": assistant_view, "rapports": reports_view,
           "parametres": settings_view, "abonnement": subscription_view, "diagnostic": diagnostic_view,
-          "garanties": guarantees_module, "recherche": search_view, "courriers": letters_view}.get(key)
+          "garanties": guarantees_module, "recherche": search_view, "courriers": letters_view,
+          "compte": account_view}.get(key)
     if fn is None:
         title, actions, fab, body = "Introuvable", [], None, page_body([ui.empty("Cette page n'existe pas.")])
     else:
         title, actions, fab, body = fn(app, params)
     return ft.View(route="/module/%s" % key, bgcolor=ui.BG, padding=0, appbar=sub_appbar(title, actions=actions),
                    floating_action_button=fab, controls=[body])
+
+
+def account_view(app, params):
+    from . import account
+    return account.view(app, params)
 
 
 # --------------------------------------------------------------------------
@@ -594,6 +601,18 @@ def subscription_view(app, params):
                        hint_text="SAFQA-PRO-20271231-SOCIETE-XXXXXXXXXX", border_radius=10)
 
     def activate(e):
+        acc = app.account
+        if acc.connected and acc.org_id:
+            # Company space: the server checks the key and applies it to every device.
+            from .account import call
+            res, err = call(app, "Activation…", acc.client().license, acc.org_id, key.value or "")
+            if err:
+                ui.snack(app.page, err, error=True)
+                return
+            acc.save_me(res)
+            ui.snack(app.page, "Abonnement activé pour toute l'entreprise")
+            app.refresh()
+            return
         ok, msg = app.sub.activate(key.value or "")
         ui.snack(app.page, msg, error=not ok)
         if ok:

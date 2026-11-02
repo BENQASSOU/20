@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Safqa · Back-office</title>
+<link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+<header>
+  <div class="brand"><span class="logo">S</span> Safqa <small>Back-office</small></div>
+  <nav id="tabs" hidden>
+    <button data-tab="dash" class="on">Tableau de bord</button>
+    <button data-tab="orgs">Entreprises</button>
+    <button data-tab="users">Utilisateurs</button>
+    <button data-tab="licence">Clés de licence</button>
+    <button data-tab="audit">Journal de sécurité</button>
+  </nav>
+  <button id="logout" class="ghost" hidden>Se déconnecter</button>
+</header>
+
+<main>
+  <section id="login" class="card narrow">
+    <h1>Connexion administrateur</h1>
+    <p class="muted">Accès réservé à l'équipe Safqa. La double authentification est obligatoire.</p>
+    <form id="loginForm" autocomplete="on">
+      <label>E-mail<input name="email" type="email" required autocomplete="username"></label>
+      <label>Mot de passe<input name="password" type="password" required autocomplete="current-password"></label>
+      <label id="codeRow" hidden>Code de l'application d'authentification<input name="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code"></label>
+      <button type="submit">Se connecter</button>
+      <p class="error" id="loginError"></p>
+    </form>
+  </section>
+
+  <section id="mfa" class="card narrow" hidden>
+    <h1>Activez la double authentification</h1>
+    <ol>
+      <li>Installez <b>Google Authenticator</b> ou <b>Microsoft Authenticator</b> sur votre téléphone.</li>
+      <li>Ajoutez un compte avec la clé ci-dessous (saisie manuelle, type « basé sur l'heure »).</li>
+      <li>Tapez le code à 6 chiffres affiché par l'application.</li>
+    </ol>
+    <p class="secret" id="mfaSecret"></p>
+    <form id="mfaForm"><label>Code à 6 chiffres<input name="code" inputmode="numeric" maxlength="6" required></label>
+      <button type="submit">Activer</button><p class="error" id="mfaError"></p></form>
+  </section>
+
+  <section id="dash" class="panel" hidden>
+    <div class="grid" id="kpis"></div>
+    <div class="card"><h2>Formules</h2><div id="plans"></div></div>
+    <div class="card"><h2>Configuration du serveur</h2><div id="config"></div></div>
+  </section>
+
+  <section id="orgs" class="panel" hidden>
+    <div class="bar"><input id="orgQ" placeholder="Rechercher une entreprise (nom, ICE)…"><button id="orgGo">Rechercher</button></div>
+    <div class="card"><table><thead><tr><th>Entreprise</th><th>Propriétaire</th><th>Formule</th><th>Échéance</th><th>Membres</th><th>Données</th><th>IA (mois)</th><th></th></tr></thead><tbody id="orgRows"></tbody></table></div>
+  </section>
+
+  <section id="users" class="panel" hidden>
+    <div class="bar"><input id="userQ" placeholder="Rechercher un utilisateur (e-mail, nom)…"><button id="userGo">Rechercher</button></div>
+    <div class="card"><table><thead><tr><th>Utilisateur</th><th>Entreprises</th><th>Inscrit</th><th>Dernière connexion</th><th>Sécurité</th><th></th></tr></thead><tbody id="userRows"></tbody></table></div>
+  </section>
+
+  <section id="licence" class="panel" hidden>
+    <div class="card narrow">
+      <h2>Générer une clé de licence</h2>
+      <p class="muted">Pour un client qui a payé par virement : la clé s'active dans l'application (Plus › Abonnement).
+        Vous pouvez aussi changer directement la formule d'une entreprise dans l'onglet Entreprises.</p>
+      <form id="licForm">
+        <label>Formule<select name="plan"><option>ESSENTIEL</option><option selected>PRO</option><option>ENTREPRISE</option></select></label>
+        <label>Valable jusqu'au<input name="until" type="date" required></label>
+        <label>Client (sans espaces)<input name="customer" maxlength="20" required placeholder="BTPATLAS"></label>
+        <button type="submit">Générer</button>
+      </form>
+      <p class="secret" id="licKey"></p>
+    </div>
+  </section>
+
+  <section id="audit" class="panel" hidden>
+    <div class="bar"><input id="auditQ" placeholder="Filtrer (action, e-mail, adresse IP)…"><button id="auditGo">Filtrer</button></div>
+    <div class="card"><table><thead><tr><th>Date</th><th>Action</th><th>Utilisateur</th><th>Entreprise</th><th>IP</th><th>Détail</th></tr></thead><tbody id="auditRows"></tbody></table></div>
+  </section>
+</main>
+
+<dialog id="modal"><form method="dialog"><h2 id="modalTitle"></h2><div id="modalBody"></div>
+  <menu><button value="cancel" class="ghost">Fermer</button><button id="modalOk" value="ok">Valider</button></menu></form></dialog>
+<div id="toast"></div>
+<script src="/admin/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+# Safqa Cloud - one-click deployment on Render (https://render.com).
+# Render reads this file when you click "New > Blueprint" and select this
+# repository. Step-by-step guide: DEPLOIEMENT.md
+databases:
+  - name: safqa-db
+    databaseName: safqa
+    user: safqa
+    region: frankfurt
+    plan: basic-256mb
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: safqa-cloud
+    runtime: docker
+    region: frankfurt
+    plan: starter
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeploy: false
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: safqa-db
+          property: connectionString
+      - key: SAFQA_ENV
+        value: production
+      - key: SAFQA_DATA_KEY          # encryption key of all company data: generated once, NEVER change it
+        generateValue: true
+      - key: SAFQA_ADMIN_EMAILS      # your e-mail: this account becomes administrator of the back-office
+        sync: false
+      - key: ANTHROPIC_API_KEY       # Claude API key (console.anthropic.com) - AI included for subscribers
+        sync: false
+      - key: SAFQA_LICENSE_SECRET    # same value as the GitHub secret used for the APK
+        sync: false
+      - key: WEB_CONCURRENCY
+        value: "2"
+      - key: SAFQA_DB_POOL
+        value: "15"

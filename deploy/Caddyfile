@@ -1,0 +1,7 @@
+{$SAFQA_DOMAIN} {
+	encode gzip
+	request_body {
+		max_size 40MB
+	}
+	reverse_proxy app:8000
+}
